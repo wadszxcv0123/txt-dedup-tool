@@ -253,41 +253,39 @@ class ConfigManager:
 class RemoteHashIndex:
     def __init__(self, server_url: str, logger=None, max_retries=3, retry_delay=2, config=None, machine_id=''):
         self.server_url = server_url.rstrip('/')
-        self._lock = threading.Lock()
-        self._session = requests.Session()
         self._config = config or {}
-        self._session.timeout = self._config.get('request_timeout', 60)
-        self._session.headers.update({'Content-Type': 'application/json'})
+        self._default_timeout = self._config.get('request_timeout', 60)
+        self._headers = {'Content-Type': 'application/json'}
         self._logger = logger
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self._machine_id = machine_id
         self._batch_size = self._config.get('batch_size', MAX_BATCH_SIZE)
-        self._use_gzip = self._config.get('use_gzip', True)  # 对大请求体启用 gzip 压缩
+        self._use_gzip = self._config.get('use_gzip', True)
 
     def _compress_and_post(self, url: str, json_data: dict, timeout: int):
         """对 POST 请求体进行 gzip 压缩后发送（文本数据压缩率 5-10x）"""
         compressed = gzip.compress(json.dumps(json_data).encode('utf-8'), compresslevel=6)
-        headers = dict(self._session.headers)
-        headers['Content-Encoding'] = 'gzip'
-        headers['Content-Type'] = 'application/json'
-        return self._session.post(url, data=compressed, headers=headers, timeout=timeout)
+        headers = {'Content-Encoding': 'gzip', 'Content-Type': 'application/json'}
+        return requests.post(url, data=compressed, headers=headers, timeout=timeout)
 
     def _make_request(self, endpoint: str, method='GET', data=None):
         url = f"{self.server_url}/{endpoint}"
         start_time = time.time()
-        timeout = 120
+        timeout = self._config.get('request_timeout', 120)
         
         for attempt in range(self.max_retries):
             try:
                 if method == 'GET':
-                    response = self._session.get(url, params=data, timeout=timeout)
+                    response = requests.get(url, params=data, timeout=timeout)
                 elif method == 'POST':
                     # 对大请求体启用 gzip 压缩（原始文本极适合压缩）
                     if self._use_gzip and data and isinstance(data, dict):
                         response = self._compress_and_post(url, data, timeout)
                     else:
-                        response = self._session.post(url, json=data, timeout=timeout)
+                        response = requests.post(url, json=data, timeout=timeout, headers=self._headers)
+                else:
+                    return None
                 response.raise_for_status()
                 duration_ms = (time.time() - start_time) * 1000
                 return response.json()
@@ -365,7 +363,8 @@ class RemoteHashIndex:
             if result and result.get('success'):
                 results.extend(result.get('results', []))
             else:
-                results.extend([False] * len(batch))
+                # 服务端失败时保守计为重复，避免漏报导致脏数据入库
+                results.extend([True] * len(batch))
         return results
 
     def check_only_batch(self, hash_vals: List[str], filename: str = "") -> List[bool]:
@@ -380,7 +379,8 @@ class RemoteHashIndex:
             if result and result.get('success'):
                 results.extend(result.get('results', []))
             else:
-                results.extend([False] * len(batch))
+                # 服务端失败时保守计为重复，避免漏报
+                results.extend([True] * len(batch))
         return results
 
     def get_stats(self):
@@ -812,7 +812,8 @@ class RemoteTXTDeduplicator:
         dup_writer = None
         dup_output_file = None
         all_duplicate_hashes = []
-        all_unique_lines = []
+        unique_writer = None
+        unique_tmp_file = None
         server_hash_total_ms = 0
         server_check_total_ms = 0
 
@@ -865,9 +866,9 @@ class RemoteTXTDeduplicator:
                     duplicate_lines += dup_count
                     unique_lines += uniq_count
                     
-                    # 收集重复哈希用于追溯来源
-                    if dup_hashes:
-                        all_duplicate_hashes.extend(dup_hashes)
+                    # 收集重复哈希用于追溯来源（仅保留前200个，避免内存膨胀）
+                    if dup_hashes and len(all_duplicate_hashes) < 200:
+                        all_duplicate_hashes.extend(dup_hashes[:200 - len(all_duplicate_hashes)])
 
                     # 记录重复行内容
                     if dup_writer:
@@ -876,18 +877,22 @@ class RemoteTXTDeduplicator:
                                 dup_writer.write(f"{line_pos + idx + 1}|{lines[idx]}")
                         dup_writer.flush()
 
-                    # 收集唯一行用于输出
+                    # 流式写入唯一行到临时文件（按块顺序，无需排序）
                     if output_file:
+                        if unique_writer is None:
+                            unique_tmp_file = output_file + '.tmp'
+                            unique_writer = open(unique_tmp_file, 'w', encoding='utf-8')
                         for idx in uniq_indices:
                             if idx < len(lines):
-                                all_unique_lines.append((line_pos + idx, lines[idx].rstrip('\r\n')))
+                                unique_writer.write(lines[idx].rstrip('\r\n') + '\n')
 
-                    # 简单记录重复行内容用于统计
-                    for idx in dup_indices:
-                        if idx < len(lines):
-                            line_stripped = lines[idx].rstrip('\r\n')
-                            if line_stripped:
-                                duplicate_counter[line_stripped] = duplicate_counter.get(line_stripped, 0) + 1
+                    # 简单记录重复行内容用于统计（仅保留前20条，避免内存膨胀）
+                    if len(duplicate_counter) < 20:
+                        for idx in dup_indices:
+                            if idx < len(lines):
+                                line_stripped = lines[idx].rstrip('\r\n')
+                                if line_stripped and line_stripped not in duplicate_counter:
+                                    duplicate_counter[line_stripped] = 1
 
                     self.logger.debug(f"[块处理] 块 {chunks_processed + 1} | 行数:{chunk_lines} | 唯一:{uniq_count} | 重复:{dup_count} | 耗时:{chunk_duration:.0f}ms")
                 else:
@@ -910,13 +915,16 @@ class RemoteTXTDeduplicator:
             dup_writer.close()
 
         if output_file:
-            print(f"\n  生成唯一数据文件...")
-            # 按原始顺序排列唯一行
-            all_unique_lines.sort(key=lambda x: x[0])
-            with open(output_file, 'w', encoding='utf-8') as f:
-                for _, line in all_unique_lines:
-                    f.write(line + '\n')
-            self.logger.info(f"[文件输出] 唯一数据已保存: {output_file}")
+            if unique_writer:
+                unique_writer.close()
+                unique_writer = None
+                os.replace(unique_tmp_file, output_file)
+                self.logger.info(f"[文件输出] 唯一数据已保存: {output_file}")
+            else:
+                print(f"\n  生成唯一数据文件...")
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    pass
+                self.logger.info(f"[文件输出] 无唯一数据: {output_file}")
 
         total_time = time.time() - total_start
 
@@ -1060,7 +1068,8 @@ class RemoteTXTDeduplicator:
 
                 chunk_start = time.time()
                 new_hashes, dup_hashes, duplicates = self.process_chunk_parallel(lines)
-                all_duplicate_hashes.extend(dup_hashes)
+                if dup_hashes and len(all_duplicate_hashes) < 200:
+                    all_duplicate_hashes.extend(dup_hashes[:200 - len(all_duplicate_hashes)])
                 chunk_duration = (time.time() - chunk_start) * 1000
 
                 self.logger.debug(f"[块处理] 块 {chunks_processed + 1} | 行数: {chunk_lines} | 唯一: {len(new_hashes)} | 重复: {len(dup_hashes)} | 耗时: {chunk_duration:.2f}ms")
@@ -1076,10 +1085,11 @@ class RemoteTXTDeduplicator:
                 if output_file:
                     unique_lines_set.update(new_hashes)
 
-                for _, line in duplicates:
-                    line_stripped = line.rstrip('\r\n')
-                    if line_stripped:
-                        duplicate_counter[line_stripped] = duplicate_counter.get(line_stripped, 0) + 1
+                if len(duplicate_counter) < 20:
+                    for _, line in duplicates:
+                        line_stripped = line.rstrip('\r\n')
+                        if line_stripped and line_stripped not in duplicate_counter:
+                            duplicate_counter[line_stripped] = 1
 
                 chunks_processed += 1
                 progress_bar.update(chunks_processed, line_count=chunk_lines)

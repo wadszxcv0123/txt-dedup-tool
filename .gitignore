@@ -27,6 +27,9 @@ venv/
 
 # Build
 build/
+dist/
+release/
+*.spec
 
 # OS
 .DS_Store
@@ -34,3 +37,9 @@ Thumbs.db
 
 # Temp
 *.tmp
+
+# Large binary files
+*.exe
+*.zip
+*.jpg
+*.png

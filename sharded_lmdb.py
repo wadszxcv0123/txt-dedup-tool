@@ -107,7 +107,9 @@ class ShardedLMDB:
         try:
             k = int(key_hex[:8], 16)
         except Exception:
-            k = hash(key_hex)
+            k = 0
+            for ch in key_hex:
+                k = (k * 31 + ord(ch)) & 0xFFFFFFFF
         return k % self.shard_count
 
     def _ensure_metadata(self, metadata: Optional[Dict]) -> Dict:
@@ -245,7 +247,32 @@ class ShardedLMDB:
             return 0
 
         deleted = 0
+
+        shard_sizes = []
+        for env, hashes_db, _ in self.shards:
+            with env.begin(write=False) as txn:
+                stat = txn.stat(db=hashes_db)
+                shard_sizes.append(stat.get('entries', 0))
+        total_entries = sum(shard_sizes)
+
+        if total_entries == 0:
+            return 0
+
+        shard_quotas = []
+        remaining = count
+        for i, size in enumerate(shard_sizes):
+            if i == len(shard_sizes) - 1:
+                quota = remaining
+            else:
+                quota = max(1, int(count * size / total_entries)) if total_entries > 0 else 1
+                quota = min(quota, remaining)
+            shard_quotas.append(quota)
+            remaining -= quota
+
         for shard_idx, (env, hashes_db, timestamps_db) in enumerate(self.shards):
+            quota = shard_quotas[shard_idx]
+            if quota <= 0:
+                continue
             if deleted >= count:
                 break
             with self.locks[shard_idx]:
@@ -255,7 +282,7 @@ class ShardedLMDB:
                         continue
 
                     keys_to_delete = []
-                    while deleted + len(keys_to_delete) < count:
+                    while deleted + len(keys_to_delete) < count and len(keys_to_delete) < quota:
                         ts_key = cursor.key()
                         hash_key = ts_key[9:]
                         keys_to_delete.append((hash_key, ts_key))

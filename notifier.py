@@ -133,7 +133,10 @@ def email_notification(config: dict, title: str, message: str) -> bool:
     import logging
     log = logging.getLogger('dedup_notifier')
     
-    # 提取到 try 外部，确保 except 块也能访问
+    if not config:
+        log.error("[邮件] 配置为空，无法发送邮件")
+        return False
+    
     smtp_server = config.get('smtp_server', '')
     smtp_port = config.get('smtp_port', 587)
     smtp_username = config.get('smtp_username', '')
@@ -165,7 +168,7 @@ def email_notification(config: dict, title: str, message: str) -> bool:
             server.starttls()
             server.ehlo()
             server.login(smtp_username, smtp_password)
-            server.sendmail(from_addr, to_addrs.split(','), part.as_string())
+            server.sendmail(from_addr, [addr.strip() for addr in to_addrs.split(',')], part.as_string())
         
         return True
     except smtplib.SMTPAuthenticationError:
@@ -338,7 +341,7 @@ class NotificationManager:
         if not self._check_notify_interval(notify_key):
             if self.logger:
                 self.logger.info(f"[通知] 发送间隔未到，跳过发送")
-            return True
+            return False
         
         success = send_notification(self.notify_type, title, message, self.notify_config)
         

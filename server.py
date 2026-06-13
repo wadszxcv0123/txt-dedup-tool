@@ -11,6 +11,7 @@ import threading
 import argparse
 import configparser
 import signal
+import secrets
 try:
     import psutil
     PSUTIL_AVAILABLE = True
@@ -184,10 +185,10 @@ class ProgressBar:
         self.current = current
         if self.total == 0:
             percent = 100
+            filled_length = self.length
         else:
             percent = (self.current / self.total) * 100
-        
-        filled_length = int(self.length * self.current // self.total)
+            filled_length = int(self.length * self.current // self.total)
         bar = '=' * filled_length + '-' * (self.length - filled_length)
         
         print(f'\r{self.prefix} [{bar}] {percent:.1f}% {self.suffix}', end='', flush=True)
@@ -717,6 +718,7 @@ _rate_limit_enabled = True
 _rate_limit_max = 120
 _rate_limit_window = 60
 _rate_limit_block_duration = 60
+_csrf_token = secrets.token_hex(32)
 
 
 def _check_rate_limit(ip: str) -> bool:
@@ -1322,6 +1324,11 @@ def health_detailed():
 @app.route('/api/cleanup', methods=['POST'])
 def manual_cleanup():
     data = request.get_json() or {}
+    
+    token = data.get('csrf_token', '')
+    if not secrets.compare_digest(token, _csrf_token):
+        return jsonify({'success': False, 'error': 'CSRF token 无效'}), 403
+    
     count = data.get('count', 100000)
     
     if not hash_index:
@@ -1417,7 +1424,7 @@ def dashboard():
         return jsonify({'error': 'Web管理看板未启用，请在配置文件中设置 Dashboard.enabled = true'}), 403
     
     from flask import render_template_string
-    return render_template_string(DASHBOARD_HTML, refresh=refresh * 1000)
+    return render_template_string(DASHBOARD_HTML, refresh=refresh * 1000, csrf_token=_csrf_token)
 
 
 DASHBOARD_HTML = r"""<!DOCTYPE html>
@@ -1599,6 +1606,7 @@ TXT查重工具 v<span id="footer-ver">-</span> | 看板自动刷新 | 构建于
 
 <script>
 var REFRESH = {{ refresh }};
+var CSRF_TOKEN = '{{ csrf_token }}';
 var lastUpdate = null;
 var updateTimer = null;
 
@@ -1834,7 +1842,7 @@ resultEl.style.background = '#2c3e20';
 fetch('/api/cleanup', {
 method: 'POST',
 headers: {'Content-Type': 'application/json'},
-body: JSON.stringify({count: count})
+body: JSON.stringify({count: count, csrf_token: CSRF_TOKEN})
 })
 .then(function(r) { return r.json(); })
 .then(function(data) {
@@ -1867,10 +1875,10 @@ def create_parser():
     )
     parser.add_argument('-i', '--index-dir', default=None,
                        help='索引目录，存储查重索引（默认: 程序同目录/.dedup_index）')
-    parser.add_argument('-H', '--host', default='0.0.0.0',
+    parser.add_argument('-H', '--host', default=None,
                        help='绑定地址（默认: 0.0.0.0）')
-    parser.add_argument('-p', '--port', type=int, default=8888,
-                       help='监听端口（默认: 8888）')
+    parser.add_argument('-p', '--port', type=int, default=None,
+                       help='监听端口（默认: 5566）')
     parser.add_argument('--no-db', action='store_true',
                        help='不使用数据库，使用内存存储（仅用于小数据量测试）')
     parser.add_argument('--storage', choices=['sqlite', 'lmdb', 'memory'], default=None,
@@ -2146,8 +2154,8 @@ def main(config_file_override=None):
     }
     
     # 命令行参数优先于配置文件
-    host = args.host if args.host != '0.0.0.0' else config.get_host()
-    port = args.port if args.port != 8888 else config.get_port()
+    host = args.host if args.host is not None else config.get_host()
+    port = args.port if args.port is not None else config.get_port()
     storage_type = args.storage if args.storage else config.get_storage_type()
     if args.no_db:
         storage_type = 'memory'
@@ -2394,6 +2402,9 @@ def main(config_file_override=None):
                 sleep_seconds = 86400
             time.sleep(sleep_seconds)
             
+            if not _server_running:
+                break
+            
             if not hash_index.use_db:
                 logger.info("[完整性校验] 非SQLite模式，跳过数据库完整性检查")
                 continue
@@ -2452,6 +2463,9 @@ def main(config_file_override=None):
             if sleep_seconds < 0:
                 sleep_seconds = 86400
             time.sleep(sleep_seconds)
+            
+            if not _server_running:
+                break
             
             if not hash_index.use_db:
                 logger.info("[数据库维护] 非SQLite模式，跳过数据库维护")
@@ -2583,7 +2597,13 @@ def main(config_file_override=None):
         werkzeug_logger = logging.getLogger('werkzeug')
         werkzeug_logger.setLevel(logging.WARNING)
         
-        app.run(host=host, port=port, debug=args.debug, threaded=True, use_reloader=False)
+        try:
+            from waitress import serve
+            logger.info("[服务器] 使用 waitress WSGI 服务器")
+            serve(app, host=host, port=port, threads=32, channel_timeout=120)
+        except ImportError:
+            logger.info("[服务器] waitress 未安装，使用 Flask 内置服务器（仅限开发环境）")
+            app.run(host=host, port=port, debug=args.debug, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
         _do_shutdown()
     except Exception as e:
