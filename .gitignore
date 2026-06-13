@@ -26,7 +26,6 @@ env/
 venv/
 
 # Build
-dist/
 build/
 
 # OS
