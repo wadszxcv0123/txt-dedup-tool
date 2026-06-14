@@ -251,11 +251,13 @@ class ConfigManager:
 
 
 class RemoteHashIndex:
-    def __init__(self, server_url: str, logger=None, max_retries=3, retry_delay=2, config=None, machine_id=''):
+    def __init__(self, server_url: str, logger=None, max_retries=3, retry_delay=2, config=None, machine_id='', api_token=''):
         self.server_url = server_url.rstrip('/')
         self._config = config or {}
         self._default_timeout = self._config.get('request_timeout', 60)
         self._headers = {'Content-Type': 'application/json'}
+        if api_token:
+            self._headers['X-API-Token'] = api_token
         self._logger = logger
         self.max_retries = max_retries
         self.retry_delay = retry_delay
@@ -404,6 +406,23 @@ class RemoteHashIndex:
                 'duplicate_rate': duplicate_rate,
                 'duration_ms': duration_ms,
                 'machine_id': self._machine_id
+            }
+        )
+
+    def record_history(self, filename: str, file_path: str, total: int, duplicate: int, unique: int, duplicate_rate: float, duration_ms: float):
+        """记录查重历史到服务端"""
+        self._make_request(
+            'api/history',
+            method='POST',
+            data={
+                'filename': filename,
+                'file_path': file_path,
+                'machine_id': self._machine_id,
+                'total': total,
+                'duplicate': duplicate,
+                'unique': unique,
+                'duplicate_rate': duplicate_rate,
+                'duration_ms': duration_ms
             }
         )
     
@@ -644,7 +663,7 @@ class TableOutput:
 
 
 class RemoteTXTDeduplicator:
-    def __init__(self, server_url: str, chunk_size: int = 100000, threads: int = None, log_dir: str = "logs", config=None, machine_id=''):
+    def __init__(self, server_url: str, chunk_size: int = 100000, threads: int = None, log_dir: str = "logs", config=None, machine_id='', api_token=''):
         self.server_url = server_url
         self.chunk_size = chunk_size
         self._config = config or {}
@@ -660,7 +679,7 @@ class RemoteTXTDeduplicator:
             self.log_dir = os.path.join(script_dir, log_dir)
         
         self.logger = DedupLogger("dedup_client", log_dir=self.log_dir, level="INFO")
-        self.remote_index = RemoteHashIndex(server_url, logger=self.logger, config=self._config, machine_id=self._machine_id)
+        self.remote_index = RemoteHashIndex(server_url, logger=self.logger, config=self._config, machine_id=self._machine_id, api_token=api_token)
         self.notifier = None
         self._file_path = ""
 
@@ -671,10 +690,12 @@ class RemoteTXTDeduplicator:
             return hashlib.sha256(line.encode('utf-8')).hexdigest()
 
     def detect_encoding(self, filepath: str) -> str:
-        encodings = ['utf-8', 'gbk', 'gb2312', 'gb18030', 'big5', 'utf-16']
         with open(filepath, 'rb') as f:
-            raw = f.read(1024)
-            for enc in encodings:
+            raw = f.read(4096)
+            null_count = raw.count(b'\x00')
+            if len(raw) > 0 and null_count / len(raw) > 0.01:
+                raise ValueError("检测到二进制文件，请提供文本文件")
+            for enc in ['utf-8-sig', 'utf-8', 'gbk', 'gb2312', 'gb18030', 'big5', 'utf-16']:
                 try:
                     raw.decode(enc)
                     return enc
@@ -956,6 +977,15 @@ class RemoteTXTDeduplicator:
                 duplicate_rate=stats["重复率(%)"],
                 duration_ms=total_time * 1000
             )
+            self.remote_index.record_history(
+                filename=operation_name,
+                file_path=input_file,
+                total=total_lines,
+                duplicate=duplicate_lines,
+                unique=unique_lines,
+                duplicate_rate=stats["重复率(%)"],
+                duration_ms=total_time * 1000
+            )
         except Exception as e:
             self.logger.debug(f"[通知服务端] 调用 /api/complete 失败: {str(e)}")
 
@@ -1155,6 +1185,15 @@ class RemoteTXTDeduplicator:
                 duplicate_rate=stats["重复率(%)"],
                 duration_ms=total_time * 1000
             )
+            self.remote_index.record_history(
+                filename=operation_name,
+                file_path=input_file,
+                total=total_lines,
+                duplicate=duplicate_lines,
+                unique=unique_lines,
+                duplicate_rate=stats["重复率(%)"],
+                duration_ms=total_time * 1000
+            )
         except Exception as e:
             self.logger.debug(f"[通知服务端] 调用 /api/complete 失败: {str(e)}")
 
@@ -1187,6 +1226,8 @@ def create_parser():
     parser.add_argument('--config', default=CONFIG_FILE, help='配置文件路径')
     parser.add_argument('--set-server', default=None, help='设置服务端地址到配置文件')
     parser.add_argument('--test-email', action='store_true', help='测试邮件配置是否正确')
+    parser.add_argument('--watch', default=None, help='监控目录，新TXT文件自动查重')
+    parser.add_argument('--api-token', default=None, help='API Token（覆盖配置文件）')
     parser.add_argument('-v', '--version', action='version', version=f'v{VERSION}')
 
     return parser
@@ -1358,7 +1399,8 @@ def _main():
             chunk_size=chunk_size,
             threads=threads,
             config=full_config,
-            machine_id=machine_id
+            machine_id=machine_id,
+            api_token=args.api_token or ''
         )
 
         if not deduplicator.remote_index.health_check():
@@ -1375,6 +1417,48 @@ def _main():
             print(f"存储类型: {server_stats.get('storage_type', 'Unknown')}")
             deduplicator.logger.info(f"[服务端信息] 索引记录: {server_stats.get('total_records', 0):,} | 存储类型: {server_stats.get('storage_type', 'Unknown')}")
             print()
+
+        # 文件夹监控模式
+        if args.watch:
+            watch_dir = args.watch
+            if not os.path.isdir(watch_dir):
+                print(f"{Colors.red(f'错误: 目录不存在: {watch_dir}')}")
+                return
+            print(f"\n{'='*60}")
+            print(f"{Colors.green('文件夹监控模式')}")
+            print(f"监控目录: {watch_dir}")
+            print(f"按 Ctrl+C 停止监控")
+            print(f"{'='*60}\n")
+            processed_files = set()
+            for f in os.listdir(watch_dir):
+                if f.lower().endswith('.txt'):
+                    processed_files.add(os.path.join(watch_dir, f))
+            try:
+                while True:
+                    time.sleep(5)
+                    for f in os.listdir(watch_dir):
+                        if not f.lower().endswith('.txt'):
+                            continue
+                        fpath = os.path.join(watch_dir, f)
+                        if fpath in processed_files:
+                            continue
+                        processed_files.add(fpath)
+                        print(f"\n{Colors.blue('[新文件]')} 检测到新文件: {f}")
+                        try:
+                            deduplicator.logger.set_log_file(fpath)
+                            stats = deduplicator.deduplicate_file(
+                                input_file=fpath,
+                                output_file=None,
+                                output_duplicates=None,
+                                save_index=not args.check_only
+                            )
+                            print(f"{Colors.green('[完成]')} {f}: 总数 {stats['总数据量']:,} | 重复 {stats['重复数据量']:,} | 重复率 {stats['重复率(%)']:.2f}%")
+                        except Exception as e:
+                            print(f"{Colors.red(f'[错误]')} 处理 {f} 失败: {e}")
+            except KeyboardInterrupt:
+                print(f"\n{Colors.yellow('监控已停止')}")
+                deduplicator.logger.close()
+                return
 
         total_stats = {
             '总文件数': len(input_files),

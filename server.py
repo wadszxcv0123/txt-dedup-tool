@@ -308,6 +308,10 @@ class HashIndex:
         
         self._lock = threading.Lock()
         self._deleted_count = 0
+        self._stats_cache = None
+        self._stats_cache_time = 0
+        self._machine_stats_cache = None
+        self._machine_stats_cache_time = 0
         self._load_index()
 
     def _load_index(self):
@@ -409,6 +413,8 @@ class HashIndex:
                             rows
                         )
                         self._db.commit()
+                        self._stats_cache = None
+                        self._machine_stats_cache = None
                     except Exception:
                         self._db.rollback()
                         raise
@@ -491,10 +497,9 @@ class HashIndex:
         return sources
 
     def get_stats(self):
+        now = time.time()
+
         if self.use_lmdb:
-            # 缓存统计结果，每60秒最多重新计算一次（避免每次请求都遍历1200万记录）
-            import time
-            now = time.time()
             if self._lmdb_total_cached is not None and (now - self._lmdb_stats_cache_time) < 60:
                 return {
                     'total_records': self._lmdb_total_cached,
@@ -510,11 +515,16 @@ class HashIndex:
 
         if self.use_db:
             try:
+                if self._stats_cache is not None and (now - self._stats_cache_time) < 60:
+                    return self._stats_cache
                 total = self._db.execute("SELECT COUNT(*) FROM hashes").fetchone()[0]
-                return {
+                result = {
                     'total_records': total,
                     'storage_type': 'SQLite'
                 }
+                self._stats_cache = result
+                self._stats_cache_time = now
+                return result
             except Exception:
                 return {
                     'total_records': 0,
@@ -586,7 +596,11 @@ class HashIndex:
         return stats
 
     def get_machine_stats(self):
-        """获取机台统计信息"""
+        """获取机台统计信息（60秒缓存）"""
+        now = time.time()
+        if self._machine_stats_cache is not None and (now - self._machine_stats_cache_time) < 60:
+            return self._machine_stats_cache
+
         machine_counts = {}
         total_records = 0
         
@@ -614,11 +628,14 @@ class HashIndex:
                 machine_counts[machine_id] = machine_counts.get(machine_id, 0) + 1
             total_records = len(self.seen_hashes)
         
-        return {
+        result = {
             'machine_counts': machine_counts,
             'total_records': total_records,
             'machine_count': len(machine_counts)
         }
+        self._machine_stats_cache = result
+        self._machine_stats_cache_time = now
+        return result
 
     def close(self):
         if self.use_db:
@@ -654,6 +671,8 @@ class HashIndex:
                     self._deleted_count += deleted
                     self._db.execute("DELETE FROM _batch_cleanup")
                     self._db.commit()
+                    self._stats_cache = None
+                    self._machine_stats_cache = None
                 except Exception:
                     self._db.rollback()
                     raise
@@ -661,6 +680,8 @@ class HashIndex:
                 try:
                     deleted = self.lmdb_backend.cleanup_oldest(count)
                     self._deleted_count += deleted
+                    self._stats_cache = None
+                    self._machine_stats_cache = None
                 except Exception:
                     raise
             else:
@@ -670,6 +691,8 @@ class HashIndex:
                     self.seen_hashes.pop(sorted_keys[i], None)
                 deleted = delete_count
                 self._deleted_count += deleted
+                self._stats_cache = None
+                self._machine_stats_cache = None
         
         if logger and deleted > 0:
             logger.info(f"[清理] 成功删除 {deleted:,} 条最早数据")
@@ -719,6 +742,24 @@ _rate_limit_max = 120
 _rate_limit_window = 60
 _rate_limit_block_duration = 60
 _csrf_token = secrets.token_hex(32)
+_api_token = secrets.token_hex(16)
+_api_token_enabled = False
+_last_csrf_rotation = time.time()
+_csrf_rotation_interval = 3600  # 每小时轮转一次
+
+
+def _sanitize_error(e: Exception) -> str:
+    """脱敏错误信息，不暴露内部路径和异常详情"""
+    err_str = str(e)
+    if 'no such table' in err_str.lower() or 'database' in err_str.lower():
+        return '数据库内部错误'
+    if 'permission denied' in err_str.lower() or 'access' in err_str.lower():
+        return '文件访问权限错误'
+    if 'no space left' in err_str.lower():
+        return '磁盘空间不足'
+    if len(err_str) > 100:
+        return '服务内部错误，请查看日志'
+    return err_str
 
 
 def _check_rate_limit(ip: str) -> bool:
@@ -795,13 +836,28 @@ def _send_event_email(subject: str, body: str, config: dict = None, log=None):
 
 @app.before_request
 def before_request():
-    global active_connections
+    global active_connections, _csrf_token, _last_csrf_rotation
+
+    # CSRF token 定时轮转
+    now = time.time()
+    if now - _last_csrf_rotation > _csrf_rotation_interval:
+        _csrf_token = secrets.token_hex(32)
+        _last_csrf_rotation = now
+
     with connections_lock:
         active_connections += 1
         if health_monitor:
             health_monitor.set_connection_count(active_connections)
     request.start_time = time.time()
     request.client_ip = request.remote_addr
+
+    # API Token 认证（跳过健康检查和看板页面）
+    if _api_token_enabled:
+        skip_auth_endpoints = ('/api/health', '/', '/api/stats')
+        if not any(request.path.startswith(ep) for ep in skip_auth_endpoints):
+            token = request.headers.get('X-API-Token', '') or request.args.get('token', '')
+            if not secrets.compare_digest(token, _api_token):
+                return jsonify({'error': '认证失败，请提供有效的 API Token'}), 401
     
     # 自动解压 gzip 压缩的请求体（客户端发送原始文本时可压缩 5-10x）
     if request.content_encoding and request.content_encoding in ('gzip', 'x-gzip'):
@@ -856,6 +912,10 @@ def check_hash():
             logger.warning(f"[参数错误] hashes必须是列表 | IP: {request.client_ip}")
             return jsonify({'error': 'hashes必须是列表'}), 400
         
+        hashes = [h for h in hashes if isinstance(h, str) and h.strip()]
+        if not hashes:
+            return jsonify({'error': '哈希值列表为空'}), 400
+        
         if len(hashes) > 10000:
             logger.warning(f"[参数错误] 哈希数量超过限制: {len(hashes)} | IP: {request.client_ip}")
             return jsonify({'error': '单次最多处理10000个哈希值'}), 400
@@ -909,7 +969,7 @@ def check_hash():
         import traceback
         logger.error(f"[请求错误] /api/check | 异常: {str(e)} | IP: {request.client_ip}")
         logger.error(f"[堆栈跟踪]:\n{traceback.format_exc()}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _sanitize_error(e)}), 500
 
 
 # ========== 服务端哈希计算优化 ==========
@@ -1003,6 +1063,10 @@ def dedup_file():
             logger.warning(f"[参数错误] lines必须是列表 | IP: {request.client_ip}")
             return jsonify({'error': 'lines必须是列表'}), 400
         
+        lines = [l for l in lines if isinstance(l, str)]
+        if not lines:
+            return jsonify({'error': '数据行列表为空'}), 400
+        
         if len(lines) > 2000000:
             logger.warning(f"[参数错误] 行数超过限制: {len(lines)} | IP: {request.client_ip}")
             return jsonify({'error': '单次最多处理2000000行'}), 400
@@ -1088,7 +1152,7 @@ def dedup_file():
         import traceback
         logger.error(f"[请求错误] /api/dedup_file | 异常: {str(e)} | IP: {request.client_ip}")
         logger.error(f"[堆栈跟踪]:\n{traceback.format_exc()}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _sanitize_error(e)}), 500
 
 
 @app.route('/api/check_single', methods=['GET'])
@@ -1119,7 +1183,7 @@ def check_single():
     
     except Exception as e:
         logger.error(f"[请求错误] /api/check_single | 异常: {str(e)} | IP: {request.client_ip}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _sanitize_error(e)}), 500
 
 
 @app.route('/api/stats', methods=['GET'])
@@ -1134,7 +1198,7 @@ def get_stats():
         })
     except Exception as e:
         logger.error(f"[请求错误] /api/stats | 异常: {str(e)} | IP: {request.client_ip}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _sanitize_error(e)}), 500
 
 
 @app.route('/api/commit', methods=['POST'])
@@ -1149,7 +1213,7 @@ def commit_index():
         })
     except Exception as e:
         logger.error(f"[请求错误] /api/commit | 异常: {str(e)} | IP: {request.client_ip}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _sanitize_error(e)}), 500
 
 
 @app.route('/api/complete', methods=['POST'])
@@ -1189,7 +1253,7 @@ def file_complete():
         })
     except Exception as e:
         logger.error(f"[请求错误] /api/complete | 异常: {str(e)} | IP: {request.client_ip}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _sanitize_error(e)}), 500
 
 
 @app.route('/api/query_sources', methods=['POST'])
@@ -1225,7 +1289,7 @@ def query_sources():
         })
     except Exception as e:
         logger.error(f"[请求错误] /api/query_sources | 异常: {str(e)} | IP: {request.client_ip}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _sanitize_error(e)}), 500
 
 
 @app.route('/api/query_machine_compare', methods=['POST'])
@@ -1281,7 +1345,7 @@ def query_machine_compare():
         return jsonify(result)
     except Exception as e:
         logger.error(f"[请求错误] /api/query_machine_compare | 异常: {str(e)} | IP: {request.client_ip}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _sanitize_error(e)}), 500
 
 
 @app.route('/api/health', methods=['GET'])
@@ -1374,6 +1438,126 @@ def get_trends():
     return jsonify({'success': True, 'trends': trends})
 
 
+@app.route('/api/backup', methods=['POST'])
+def backup_database():
+    """备份数据库到指定路径"""
+    try:
+        data = request.get_json() or {}
+        backup_dir = data.get('backup_dir', '')
+        if not backup_dir:
+            backup_dir = os.path.join(index_dir, 'backups')
+        os.makedirs(backup_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+        if hash_index.use_db:
+            import shutil
+            src = hash_index.db_path
+            dst = os.path.join(backup_dir, f'hash_index_{timestamp}.db')
+            shutil.copy2(src, dst)
+            size_mb = round(os.path.getsize(dst) / (1024 * 1024), 1)
+            logger.info(f"[备份] SQLite 数据库已备份: {dst} ({size_mb}MB)")
+            return jsonify({'success': True, 'path': dst, 'size_mb': size_mb})
+        elif hash_index.use_lmdb:
+            import shutil
+            dst = os.path.join(backup_dir, f'lmdb_{timestamp}')
+            shutil.copytree(hash_index.index_dir, dst, dirs_exist_ok=True)
+            size_mb = round(sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(dst) for f in fs) / (1024 * 1024), 1)
+            logger.info(f"[备份] LMDB 数据已备份: {dst} ({size_mb}MB)")
+            return jsonify({'success': True, 'path': dst, 'size_mb': size_mb})
+        else:
+            return jsonify({'success': False, 'error': '内存模式不支持备份'}), 400
+    except Exception as e:
+        logger.error(f"[备份] 备份失败: {e}")
+        return jsonify({'success': False, 'error': _sanitize_error(e)}), 500
+
+
+@app.route('/api/history', methods=['GET'])
+def get_dedup_history():
+    """获取查重历史记录"""
+    history_file = os.path.join(index_dir, 'dedup_history.json') if index_dir else None
+    if not history_file or not os.path.exists(history_file):
+        return jsonify({'success': True, 'history': []})
+    try:
+        with open(history_file, 'r', encoding='utf-8') as f:
+            history = json.load(f)
+        limit = int(request.args.get('limit', 100))
+        return jsonify({'success': True, 'history': history[-limit:]})
+    except Exception:
+        return jsonify({'success': True, 'history': []})
+
+
+@app.route('/api/history', methods=['POST'])
+def add_dedup_history():
+    """添加查重历史记录"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': '缺少请求数据'}), 400
+
+        history_file = os.path.join(index_dir, 'dedup_history.json') if index_dir else None
+        if not history_file:
+            return jsonify({'error': '索引目录未设置'}), 500
+
+        history = []
+        if os.path.exists(history_file):
+            try:
+                with open(history_file, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+            except Exception:
+                history = []
+
+        record = {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'filename': data.get('filename', ''),
+            'file_path': data.get('file_path', ''),
+            'machine_id': data.get('machine_id', ''),
+            'total': data.get('total', 0),
+            'duplicate': data.get('duplicate', 0),
+            'unique': data.get('unique', 0),
+            'duplicate_rate': data.get('duplicate_rate', 0),
+            'duration_ms': data.get('duration_ms', 0)
+        }
+        history.append(record)
+
+        if len(history) > 1000:
+            history = history[-1000:]
+
+        tmp_file = history_file + '.tmp'
+        with open(tmp_file, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, history_file)
+
+        return jsonify({'success': True})
+    except Exception as e:
+        logger.error(f"[历史] 记录失败: {e}")
+        return jsonify({'error': _sanitize_error(e)}), 500
+
+
+@app.route('/api/logs', methods=['GET'])
+def get_recent_logs():
+    """获取最近的日志"""
+    try:
+        limit = int(request.args.get('limit', 50))
+        log_dir_path = os.path.join(os.path.dirname(index_dir) if index_dir else '.', 'logs')
+        if not os.path.exists(log_dir_path):
+            return jsonify({'success': True, 'logs': []})
+
+        log_files = sorted([f for f in os.listdir(log_dir_path) if f.endswith('.log')], reverse=True)
+        if not log_files:
+            return jsonify({'success': True, 'logs': []})
+
+        latest_log = os.path.join(log_dir_path, log_files[0])
+        lines = []
+        with open(latest_log, 'r', encoding='utf-8', errors='ignore') as f:
+            all_lines = f.readlines()
+            lines = [l.rstrip() for l in all_lines[-limit:]]
+
+        return jsonify({'success': True, 'logs': lines, 'file': log_files[0]})
+    except Exception as e:
+        return jsonify({'success': False, 'error': _sanitize_error(e)}), 500
+
+
 @app.route('/api/rate_limit/stats', methods=['GET'])
 def rate_limit_stats():
     now = time.time()
@@ -1407,7 +1591,7 @@ def machine_stats():
         })
     except Exception as e:
         logger.error(f"[请求错误] /api/machine_stats | 异常: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': _sanitize_error(e)}), 500
 
 
 @app.route('/', methods=['GET'])
@@ -2099,7 +2283,7 @@ def _install_signal_handlers(shutdown_callback):
 
 
 def main(config_file_override=None):
-    global hash_index, index_dir, logger, health_monitor, _server_config, _rate_limit_enabled, _rate_limit_max
+    global hash_index, index_dir, logger, health_monitor, _server_config, _rate_limit_enabled, _rate_limit_max, _api_token_enabled, _api_token
     
     if config_file_override:
         config_file = config_file_override
@@ -2134,6 +2318,11 @@ def main(config_file_override=None):
     
     _rate_limit_enabled = config.get_bool('RateLimit', 'enabled', True)
     _rate_limit_max = config.get_int('RateLimit', 'max_requests_per_minute', 120)
+
+    _api_token_enabled = config.get_bool('Auth', 'api_token_enabled', False)
+    configured_token = config.get_str('Auth', 'api_token', '')
+    if configured_token:
+        _api_token = configured_token
     
     integrity_day = config.get_int('Maintenance', 'integrity_check_day', 6)
     integrity_time_str = config.get_str('Maintenance', 'integrity_check_time', '03:00')
@@ -2426,11 +2615,45 @@ def main(config_file_override=None):
                 else:
                     error_msg = str(result[0]) if result else '未知错误'
                     logger.error(f"[完整性校验] 数据库损坏！结果: {error_msg}")
-                    _send_event_email(
-                        "[严重] 数据库完整性校验失败",
-                        f"数据库完整性校验失败！\n\n校验结果: {error_msg}\n耗时: {elapsed:.1f}秒\n\n请立即检查数据库文件是否损坏！",
-                        email_config, logger
-                    )
+
+                    # 自动修复：备份损坏数据库，尝试 REINDEX
+                    try:
+                        backup_path = hash_index.db_path + f'.backup_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+                        import shutil
+                        shutil.copy2(hash_index.db_path, backup_path)
+                        logger.info(f"[自动修复] 已备份损坏数据库到: {backup_path}")
+
+                        repair_conn = sqlite3.connect(hash_index.db_path, check_same_thread=False)
+                        try:
+                            repair_conn.execute("PRAGMA journal_mode=WAL")
+                            logger.info("[自动修复] 尝试 REINDEX 重建索引...")
+                            repair_conn.execute("REINDEX")
+                            repair_conn.commit()
+                            logger.info("[自动修复] REINDEX 完成，重新校验...")
+                            recheck = repair_conn.execute("PRAGMA integrity_check").fetchone()
+                            if recheck and recheck[0] == 'ok':
+                                logger.info("[自动修复] 数据库修复成功！")
+                                _send_event_email(
+                                    "[修复] 数据库自动修复成功",
+                                    f"数据库完整性校验失败后自动修复成功\n\n原始错误: {error_msg}\n已备份到: {backup_path}",
+                                    email_config, logger
+                                )
+                            else:
+                                logger.error(f"[自动修复] 修复后仍存在问题: {recheck[0] if recheck else '未知'}")
+                                _send_event_email(
+                                    "[严重] 数据库自动修复失败",
+                                    f"数据库完整性校验失败且自动修复未解决问题\n\n原始错误: {error_msg}\n备份位置: {backup_path}\n\n请立即人工检查！",
+                                    email_config, logger
+                                )
+                        finally:
+                            repair_conn.close()
+                    except Exception as repair_e:
+                        logger.error(f"[自动修复] 修复过程异常: {repair_e}")
+                        _send_event_email(
+                            "[严重] 数据库完整性校验失败",
+                            f"数据库完整性校验失败！自动修复过程也出现异常\n\n校验结果: {error_msg}\n修复异常: {str(repair_e)}\n\n请立即检查数据库文件！",
+                            email_config, logger
+                        )
             except Exception as e:
                 logger.error(f"[完整性校验] 校验异常: {str(e)}")
                 _send_event_email(
@@ -2543,9 +2766,12 @@ def main(config_file_override=None):
             return
         _shutting_down = True
         global _server_running
-        _server_running = False  # 立即通知后台线程停止访问 hash_index
+        _server_running = False
         logger.info("服务正在停止...")
-        
+
+        shutdown_timeout = 30
+        shutdown_start = time.time()
+
         if startup_notify:
             try:
                 stats = hash_index.get_stats()
@@ -2554,23 +2780,63 @@ def main(config_file_override=None):
                     f"TXT查重服务端已正常停止\n\n累计记录: {stats.get('total_records', 0):,} 条",
                     email_config, logger
                 )
-                time.sleep(1)
             except Exception:
                 pass
-        
+
         if health_monitor:
             try:
                 health_monitor.stop()
             except Exception:
                 pass
-        
-        hash_index.commit()
-        hash_index.close()
-        logger.log_stats()
-        logger.info("服务已停止")
+
+        def _close_index():
+            try:
+                hash_index.commit()
+                hash_index.close()
+            except Exception as e:
+                logger.warning(f"[关闭] 索引关闭异常: {e}")
+
+        close_thread = threading.Thread(target=_close_index, daemon=True)
+        close_thread.start()
+        close_thread.join(timeout=shutdown_timeout)
+
+        if close_thread.is_alive():
+            logger.warning(f"[关闭] 索引关闭超时({shutdown_timeout}秒)，强制退出")
+        else:
+            logger.log_stats()
+            logger.info("服务已停止")
     
     _install_signal_handlers(_do_shutdown)
-    
+
+    def _config_watchdog():
+        config_mtime = os.path.getmtime(config_file)
+        while _server_running:
+            time.sleep(10)
+            if not _server_running:
+                break
+            try:
+                current_mtime = os.path.getmtime(config_file)
+                if current_mtime != config_mtime:
+                    config_mtime = current_mtime
+                    new_config = ServerConfigManager(config_file)
+                    global _rate_limit_enabled, _rate_limit_max, _api_token_enabled, _api_token
+                    _rate_limit_enabled = new_config.get_bool('RateLimit', 'enabled', True)
+                    _rate_limit_max = new_config.get_int('RateLimit', 'max_requests_per_minute', 120)
+                    new_token_enabled = new_config.get_bool('Auth', 'api_token_enabled', False)
+                    new_token = new_config.get_str('Auth', 'api_token', '')
+                    _api_token_enabled = new_token_enabled
+                    if new_token:
+                        _api_token = new_token
+                    _server_config = new_config
+                    if logger:
+                        logger.info("[配置热重载] 配置文件已更新，重新加载完成")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"[配置热重载] 重新加载失败: {e}")
+
+    config_watchdog_thread = threading.Thread(target=_config_watchdog, daemon=True, name="config-watchdog")
+    config_watchdog_thread.start()
+
     if startup_notify:
         # 启动邮件放入后台线程，避免 SMTP 连接阻塞服务启动（网络故障时可能等60秒）
         def _send_startup_email():
