@@ -737,6 +737,7 @@ _server_running = True  # 控制后台定时线程，服务关闭时设为 False
 
 _rate_limit_store: Dict[str, dict] = {}
 _rate_limit_lock = threading.Lock()
+_history_lock = threading.Lock()
 _rate_limit_enabled = True
 _rate_limit_max = 120
 _rate_limit_window = 60
@@ -745,7 +746,8 @@ _csrf_token = secrets.token_hex(32)
 _api_token = secrets.token_hex(16)
 _api_token_enabled = False
 _last_csrf_rotation = time.time()
-_csrf_rotation_interval = 3600  # 每小时轮转一次
+_csrf_rotation_interval = 3600
+_csrf_rotation_lock = threading.Lock()
 
 
 def _sanitize_error(e: Exception) -> str:
@@ -838,11 +840,13 @@ def _send_event_email(subject: str, body: str, config: dict = None, log=None):
 def before_request():
     global active_connections, _csrf_token, _last_csrf_rotation
 
-    # CSRF token 定时轮转
+    # CSRF token 定时轮转（原子操作）
     now = time.time()
     if now - _last_csrf_rotation > _csrf_rotation_interval:
-        _csrf_token = secrets.token_hex(32)
-        _last_csrf_rotation = now
+        with _csrf_rotation_lock:
+            if now - _last_csrf_rotation > _csrf_rotation_interval:
+                _csrf_token = secrets.token_hex(32)
+                _last_csrf_rotation = now
 
     with connections_lock:
         active_connections += 1
@@ -1455,13 +1459,26 @@ def backup_database():
             src = hash_index.db_path
             dst = os.path.join(backup_dir, f'hash_index_{timestamp}.db')
             shutil.copy2(src, dst)
+            for suffix in ('-wal', '-shm'):
+                sidecar = src + suffix
+                if os.path.exists(sidecar):
+                    shutil.copy2(sidecar, dst + suffix)
             size_mb = round(os.path.getsize(dst) / (1024 * 1024), 1)
             logger.info(f"[备份] SQLite 数据库已备份: {dst} ({size_mb}MB)")
             return jsonify({'success': True, 'path': dst, 'size_mb': size_mb})
         elif hash_index.use_lmdb:
             import shutil
             dst = os.path.join(backup_dir, f'lmdb_{timestamp}')
-            shutil.copytree(hash_index.index_dir, dst, dirs_exist_ok=True)
+            os.makedirs(dst, exist_ok=True)
+            for item in os.listdir(hash_index.index_dir):
+                if item == 'backups':
+                    continue
+                src_path = os.path.join(hash_index.index_dir, item)
+                dst_path = os.path.join(dst, item)
+                if os.path.isdir(src_path):
+                    shutil.copytree(src_path, dst_path)
+                else:
+                    shutil.copy2(src_path, dst_path)
             size_mb = round(sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(dst) for f in fs) / (1024 * 1024), 1)
             logger.info(f"[备份] LMDB 数据已备份: {dst} ({size_mb}MB)")
             return jsonify({'success': True, 'path': dst, 'size_mb': size_mb})
@@ -1481,7 +1498,10 @@ def get_dedup_history():
     try:
         with open(history_file, 'r', encoding='utf-8') as f:
             history = json.load(f)
-        limit = int(request.args.get('limit', 100))
+        try:
+            limit = int(request.args.get('limit', 100))
+        except (ValueError, TypeError):
+            limit = 100
         return jsonify({'success': True, 'history': history[-limit:]})
     except Exception:
         return jsonify({'success': True, 'history': []})
@@ -1499,14 +1519,6 @@ def add_dedup_history():
         if not history_file:
             return jsonify({'error': '索引目录未设置'}), 500
 
-        history = []
-        if os.path.exists(history_file):
-            try:
-                with open(history_file, 'r', encoding='utf-8') as f:
-                    history = json.load(f)
-            except Exception:
-                history = []
-
         record = {
             'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
             'filename': data.get('filename', ''),
@@ -1518,15 +1530,25 @@ def add_dedup_history():
             'duplicate_rate': data.get('duplicate_rate', 0),
             'duration_ms': data.get('duration_ms', 0)
         }
-        history.append(record)
 
-        if len(history) > 1000:
-            history = history[-1000:]
+        with _history_lock:
+            history = []
+            if os.path.exists(history_file):
+                try:
+                    with open(history_file, 'r', encoding='utf-8') as f:
+                        history = json.load(f)
+                except Exception:
+                    history = []
 
-        tmp_file = history_file + '.tmp'
-        with open(tmp_file, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_file, history_file)
+            history.append(record)
+
+            if len(history) > 1000:
+                history = history[-1000:]
+
+            tmp_file = history_file + '.tmp'
+            with open(tmp_file, 'w', encoding='utf-8') as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, history_file)
 
         return jsonify({'success': True})
     except Exception as e:
@@ -1538,7 +1560,10 @@ def add_dedup_history():
 def get_recent_logs():
     """获取最近的日志"""
     try:
-        limit = int(request.args.get('limit', 50))
+        try:
+            limit = int(request.args.get('limit', 50))
+        except (ValueError, TypeError):
+            limit = 50
         log_dir_path = os.path.join(os.path.dirname(index_dir) if index_dir else '.', 'logs')
         if not os.path.exists(log_dir_path):
             return jsonify({'success': True, 'logs': []})
@@ -2809,6 +2834,7 @@ def main(config_file_override=None):
     _install_signal_handlers(_do_shutdown)
 
     def _config_watchdog():
+        global _rate_limit_enabled, _rate_limit_max, _api_token_enabled, _api_token, _server_config
         config_mtime = os.path.getmtime(config_file)
         while _server_running:
             time.sleep(10)
@@ -2819,7 +2845,6 @@ def main(config_file_override=None):
                 if current_mtime != config_mtime:
                     config_mtime = current_mtime
                     new_config = ServerConfigManager(config_file)
-                    global _rate_limit_enabled, _rate_limit_max, _api_token_enabled, _api_token
                     _rate_limit_enabled = new_config.get_bool('RateLimit', 'enabled', True)
                     _rate_limit_max = new_config.get_int('RateLimit', 'max_requests_per_minute', 120)
                     new_token_enabled = new_config.get_bool('Auth', 'api_token_enabled', False)

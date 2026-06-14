@@ -268,13 +268,14 @@ class RemoteHashIndex:
     def _compress_and_post(self, url: str, json_data: dict, timeout: int):
         """对 POST 请求体进行 gzip 压缩后发送（文本数据压缩率 5-10x）"""
         compressed = gzip.compress(json.dumps(json_data).encode('utf-8'), compresslevel=6)
-        headers = {'Content-Encoding': 'gzip', 'Content-Type': 'application/json'}
+        headers = dict(self._headers)
+        headers['Content-Encoding'] = 'gzip'
         return requests.post(url, data=compressed, headers=headers, timeout=timeout)
 
     def _make_request(self, endpoint: str, method='GET', data=None):
         url = f"{self.server_url}/{endpoint}"
         start_time = time.time()
-        timeout = self._config.get('request_timeout', 120)
+        timeout = self._config.get('request_timeout', self._default_timeout)
         
         for attempt in range(self.max_retries):
             try:
