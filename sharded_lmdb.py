@@ -119,33 +119,31 @@ class ShardedLMDB:
         return metadata
 
     def _process_shard_check_only(self, shard: int, items: List[Tuple[int, str]]) -> Dict[int, bool]:
-        """在单个分片中批量检查哈希（使用cursor游标加速）"""
+        """在单个分片中批量检查哈希（小批次事务减少锁持有时间）"""
         results: Dict[int, bool] = {}
         if not items:
             return results
 
         env, hashes_db, _ = self.shards[shard]
         lock = self.locks[shard]
-        with lock:
-            with env.begin(write=False) as txn:
-                cursor = txn.cursor(db=hashes_db)
-                seen: set[str] = set()
-                for idx, h in items:
-                    key = _to_bytes(h)
-                    if h in seen:
-                        results[idx] = True
-                        continue
-                    if cursor.set_key(key):
-                        results[idx] = True
-                        seen.add(h)
-                    else:
-                        results[idx] = False
-                        seen.add(h)
+
+        SUB_BATCH = 5000
+        for start in range(0, len(items), SUB_BATCH):
+            sub = items[start:start + SUB_BATCH]
+            with lock:
+                with env.begin(write=False) as txn:
+                    cursor = txn.cursor(db=hashes_db)
+                    for idx, h in sub:
+                        key = _to_bytes(h)
+                        if cursor.set_key(key):
+                            results[idx] = True
+                        else:
+                            results[idx] = False
         return results
 
     def _process_shard_check_and_add(self, shard: int, items: List[Tuple[int, str]],
                                       metadata: Dict, ts_int: int) -> Dict[int, bool]:
-        """在单个分片中批量检查并添加哈希"""
+        """在单个分片中批量检查并添加哈希（小批次事务减少锁持有时间）"""
         results: Dict[int, bool] = {}
         if not items:
             return results
@@ -154,26 +152,22 @@ class ShardedLMDB:
         lock = self.locks[shard]
         meta_value = json.dumps(metadata, ensure_ascii=False).encode('utf-8')
 
-        with lock:
-            with env.begin(write=True) as txn:
-                cursor = txn.cursor(db=hashes_db)
-                seen: set[str] = set()
-                for idx, h in items:
-                    key = _to_bytes(h)
-                    if h in seen:
-                        results[idx] = True
-                        continue
-                    if cursor.set_key(key):
-                        results[idx] = True
-                        seen.add(h)
-                    else:
-                        txn.put(key, meta_value, db=hashes_db)
-                        # 使用预计算的时间戳整数，避免每条hash重复解析
-                        hash_bytes = _to_bytes(h)
-                        ts_key = struct.pack('>Q', ts_int) + b'|' + hash_bytes
-                        txn.put(ts_key, b'', db=timestamps_db)
-                        results[idx] = False
-                        seen.add(h)
+        SUB_BATCH = 2000
+        for start in range(0, len(items), SUB_BATCH):
+            sub = items[start:start + SUB_BATCH]
+            with lock:
+                with env.begin(write=True) as txn:
+                    cursor = txn.cursor(db=hashes_db)
+                    for idx, h in sub:
+                        key = _to_bytes(h)
+                        if cursor.set_key(key):
+                            results[idx] = True
+                        else:
+                            txn.put(key, meta_value, db=hashes_db)
+                            hash_bytes = _to_bytes(h)
+                            ts_key = struct.pack('>Q', ts_int) + b'|' + hash_bytes
+                            txn.put(ts_key, b'', db=timestamps_db)
+                            results[idx] = False
         return results
 
     def check_and_add_batch(self, hash_vals: List[str], metadata: Dict = None) -> List[bool]:
