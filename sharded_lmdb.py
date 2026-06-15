@@ -71,6 +71,9 @@ class ShardedLMDB:
             shard_dir = os.path.join(base_dir, f"shard_{i}")
             os.makedirs(shard_dir, exist_ok=True)
 
+            if logger:
+                logger.info(f"[LMDB] 正在打开分片 {i+1}/{self.shard_count}...")
+
             env = lmdb.open(
                 shard_dir,
                 map_size=self.map_size,
@@ -84,6 +87,9 @@ class ShardedLMDB:
             )
             hashes_db = env.open_db(b"hashes")
             timestamps_db = env.open_db(b"timestamps")
+
+            if logger:
+                logger.info(f"[LMDB] 分片 {i+1} 打开完成")
             return (i, env, hashes_db, timestamps_db)
 
         if self.shard_count > 1:
