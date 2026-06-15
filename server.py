@@ -2768,6 +2768,20 @@ def main(config_file_override=None):
     
     rl_cleanup_thread = threading.Thread(target=_rate_limit_cleanup_loop, daemon=True, name="rl-cleanup")
     rl_cleanup_thread.start()
+
+    def _periodic_sync_loop():
+        while _server_running:
+            time.sleep(60)
+            if not _server_running:
+                break
+            try:
+                if hash_index and hash_index.use_lmdb:
+                    hash_index.commit()
+            except Exception:
+                pass
+
+    sync_thread = threading.Thread(target=_periodic_sync_loop, daemon=True, name="periodic-sync")
+    sync_thread.start()
     
     logger.info(f"服务已启动，监听端口 {port}")
     logger.info(f"健康检查: http://{host}:{port}/api/health")

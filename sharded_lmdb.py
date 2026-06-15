@@ -71,7 +71,6 @@ class ShardedLMDB:
             shard_dir = os.path.join(base_dir, f"shard_{i}")
             os.makedirs(shard_dir, exist_ok=True)
 
-            # 检查磁盘可用空间，避免预分配超出磁盘
             import shutil
             total, used, free = shutil.disk_usage(shard_dir)
             free_gb = free / (1024**3)
@@ -86,8 +85,8 @@ class ShardedLMDB:
                 max_dbs=2,
                 lock=True,
                 writemap=True,
-                sync=True,
-                metasync=True,
+                sync=False,
+                metasync=False,
                 readahead=True,
             )
             hashes_db = env.open_db(b"hashes")
@@ -128,7 +127,7 @@ class ShardedLMDB:
         return metadata
 
     def _process_shard_check_only(self, shard: int, items: List[Tuple[int, str]]) -> Dict[int, bool]:
-        """在单个分片中批量检查哈希（小批次事务减少锁持有时间）"""
+        """在单个分片中批量检查哈希"""
         results: Dict[int, bool] = {}
         if not items:
             return results
@@ -136,23 +135,20 @@ class ShardedLMDB:
         env, hashes_db, _ = self.shards[shard]
         lock = self.locks[shard]
 
-        SUB_BATCH = 5000
-        for start in range(0, len(items), SUB_BATCH):
-            sub = items[start:start + SUB_BATCH]
-            with lock:
-                with env.begin(write=False) as txn:
-                    cursor = txn.cursor(db=hashes_db)
-                    for idx, h in sub:
-                        key = _to_bytes(h)
-                        if cursor.set_key(key):
-                            results[idx] = True
-                        else:
-                            results[idx] = False
+        with lock:
+            with env.begin(write=False) as txn:
+                cursor = txn.cursor(db=hashes_db)
+                for idx, h in items:
+                    key = _to_bytes(h)
+                    if cursor.set_key(key):
+                        results[idx] = True
+                    else:
+                        results[idx] = False
         return results
 
     def _process_shard_check_and_add(self, shard: int, items: List[Tuple[int, str]],
                                       metadata: Dict, ts_int: int) -> Dict[int, bool]:
-        """在单个分片中批量检查并添加哈希（小批次事务减少锁持有时间）"""
+        """在单个分片中批量检查并添加哈希"""
         results: Dict[int, bool] = {}
         if not items:
             return results
@@ -161,22 +157,19 @@ class ShardedLMDB:
         lock = self.locks[shard]
         meta_value = json.dumps(metadata, ensure_ascii=False).encode('utf-8')
 
-        SUB_BATCH = 2000
-        for start in range(0, len(items), SUB_BATCH):
-            sub = items[start:start + SUB_BATCH]
-            with lock:
-                with env.begin(write=True) as txn:
-                    cursor = txn.cursor(db=hashes_db)
-                    for idx, h in sub:
-                        key = _to_bytes(h)
-                        if cursor.set_key(key):
-                            results[idx] = True
-                        else:
-                            txn.put(key, meta_value, db=hashes_db)
-                            hash_bytes = _to_bytes(h)
-                            ts_key = struct.pack('>Q', ts_int) + b'|' + hash_bytes
-                            txn.put(ts_key, b'', db=timestamps_db)
-                            results[idx] = False
+        with lock:
+            with env.begin(write=True) as txn:
+                cursor = txn.cursor(db=hashes_db)
+                for idx, h in items:
+                    key = _to_bytes(h)
+                    if cursor.set_key(key):
+                        results[idx] = True
+                    else:
+                        txn.put(key, meta_value, db=hashes_db)
+                        hash_bytes = _to_bytes(h)
+                        ts_key = struct.pack('>Q', ts_int) + b'|' + hash_bytes
+                        txn.put(ts_key, b'', db=timestamps_db)
+                        results[idx] = False
         return results
 
     def check_and_add_batch(self, hash_vals: List[str], metadata: Dict = None) -> List[bool]:
@@ -304,7 +297,7 @@ class ShardedLMDB:
         """同步所有分片到磁盘"""
         for env, _, _ in self.shards:
             try:
-                env.sync()
+                env.sync(force=True)
             except Exception:
                 pass
         return True
