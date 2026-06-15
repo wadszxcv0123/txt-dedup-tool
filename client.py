@@ -59,8 +59,8 @@ except ImportError:
     AUTHOR = "张文龙"
     CONTACT = "18053292127"
 
-MAX_BATCH_SIZE = 8000
-CONCURRENT_REQUESTS = 16
+MAX_BATCH_SIZE = 10000
+CONCURRENT_REQUESTS = 4
 
 CONFIG_FILE = "config.ini"
 
@@ -254,7 +254,7 @@ class RemoteHashIndex:
     def __init__(self, server_url: str, logger=None, max_retries=3, retry_delay=2, config=None, machine_id='', api_token=''):
         self.server_url = server_url.rstrip('/')
         self._config = config or {}
-        self._default_timeout = self._config.get('request_timeout', 60)
+        self._default_timeout = self._config.get('request_timeout', 120)
         self._headers = {'Content-Type': 'application/json'}
         if api_token:
             self._headers['X-API-Token'] = api_token
