@@ -3,7 +3,7 @@
 
 import datetime
 
-VERSION = "1.7.8"
+VERSION = "1.7.9"
 BUILD_TIME = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 APP_NAME = "TXT查重工具"

@@ -1644,72 +1644,84 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <title>TXT查重工具 - 管理看板</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Microsoft YaHei','PingFang SC',sans-serif;background:#0f1923;color:#c8d6e5;min-height:100vh}
-.header{background:linear-gradient(135deg,#1a2a3a,#0d7377);padding:16px 28px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 12px rgba(0,0,0,.4)}
-.header h1{font-size:22px;color:#e0e0e0;display:flex;align-items:center;gap:10px}
-.header h1 span{font-size:14px;color:#7f8fa6;font-weight:400;background:#1e3a52;padding:4px 10px;border-radius:4px}
-.header .status{display:flex;align-items:center;gap:12px}
-.header .status .dot{width:10px;height:10px;border-radius:50%;background:#2ecc71;animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-.header .uptime{font-size:13px;color:#7f8fa6}
-.container{max-width:1400px;margin:0 auto;padding:20px 24px}
-.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:20px}
-.card{background:#1a2733;border-radius:8px;padding:18px 20px;border:1px solid #2c3e50;transition:border-color .2s}
-.card:hover{border-color:#0d7377}
-.card .label{font-size:12px;color:#7f8fa6;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px}
-.card .value{font-size:26px;font-weight:700;color:#dfe6e9}
-.card .sub{font-size:12px;color:#636e72;margin-top:4px}
-.card.warn{border-color:#e17055}
-.card.warn .value{color:#e17055}
-.card.ok{border-color:#2ecc71}
-.section{margin-bottom:24px}
-.section h2{font-size:16px;color:#b2bec3;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid #2c3e50;display:flex;align-items:center;gap:8px}
-.section h2 .icon{width:20px;text-align:center}
+:root{--bg:#0b0f19;--card:#111827;--border:#1f2937;--accent:#6366f1;--accent2:#8b5cf6;--green:#10b981;--red:#ef4444;--yellow:#f59e0b;--blue:#3b82f6;--text:#f3f4f6;--text2:#9ca3af;--text3:#6b7280}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;background-image:radial-gradient(ellipse at top,#1a1a2e 0%,transparent 50%)}
+.header{background:rgba(17,24,39,.8);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);padding:16px 32px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100}
+.header h1{font-size:20px;font-weight:600;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;display:flex;align-items:center;gap:12px}
+.header h1 span{font-size:12px;font-weight:500;-webkit-text-fill-color:var(--text2);background:var(--border);padding:3px 10px;border-radius:20px}
+.header .status{display:flex;align-items:center;gap:16px}
+.header .status .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 12px var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(.9)}}
+.header .uptime,.header .refresh-info{font-size:12px;color:var(--text3)}
+.container{max-width:1440px;margin:0 auto;padding:24px 32px}
+.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+@media(max-width:1200px){.cards{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){.cards{grid-template-columns:1fr}}
+.card{background:var(--card);border-radius:16px;padding:20px;border:1px solid var(--border);transition:all .3s;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,var(--accent),var(--accent2));opacity:0;transition:opacity .3s}
+.card:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:0 8px 32px rgba(99,102,241,.1)}
+.card:hover::before{opacity:1}
+.card .icon{font-size:24px;margin-bottom:12px}
+.card .label{font-size:11px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-weight:500}
+.card .value{font-size:28px;font-weight:700;color:var(--text);line-height:1}
+.card .sub{font-size:11px;color:var(--text3);margin-top:8px}
+.card.warn{border-color:var(--red)}
+.card.warn .value{color:var(--red)}
+.card.warn::before{background:var(--red)}
+.section{margin-bottom:32px}
+.section h2{font-size:14px;font-weight:600;color:var(--text2);margin-bottom:16px;display:flex;align-items:center;gap:10px;text-transform:uppercase;letter-spacing:.5px}
+.section h2::after{content:'';flex:1;height:1px;background:var(--border)}
 .panels{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @media(max-width:900px){.panels{grid-template-columns:1fr}}
-.panel{background:#1a2733;border-radius:8px;padding:18px 20px;border:1px solid #2c3e50}
-.panel h3{font-size:14px;color:#b2bec3;margin-bottom:14px}
-.bar-container{background:#2c3e50;border-radius:6px;height:28px;overflow:hidden;margin-bottom:6px}
-.bar{height:100%;border-radius:6px;transition:width .5s;display:flex;align-items:center;padding:0 10px;font-size:12px;font-weight:600;color:#fff}
-.bar.green{background:linear-gradient(90deg,#27ae60,#2ecc71)}
-.bar.yellow{background:linear-gradient(90deg,#f39c12,#f1c40f)}
-.bar.red{background:linear-gradient(90deg,#c0392b,#e74c3c)}
-.bar.blue{background:linear-gradient(90deg,#2980b9,#3498db)}
-.bar-info{display:flex;justify-content:space-between;font-size:12px;color:#636e72;margin-top:4px}
-.table{width:100%;border-collapse:collapse}
-.table th{text-align:left;font-size:12px;color:#7f8fa6;padding:8px 6px;border-bottom:1px solid #2c3e50}
-.table td{font-size:13px;padding:8px 6px;border-bottom:1px solid #1e2a36;color:#c8d6e5}
-.table tr:hover{background:#1e2a36}
-.btn{background:#0d7377;color:#fff;border:none;padding:8px 18px;border-radius:5px;cursor:pointer;font-size:13px;transition:background .2s}
-.btn:hover{background:#0a5f63}
-.btn.danger{background:#c0392b}
-.btn.danger:hover{background:#a93226}
-.btn-group{display:flex;gap:8px;margin-top:12px}
-.cleanup-form{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.cleanup-form input{background:#2c3e50;border:1px solid #3d566e;color:#c8d6e5;padding:6px 12px;border-radius:4px;font-size:13px;width:120px}
-.cleanup-result{margin-top:10px;font-size:13px;padding:8px 12px;border-radius:4px;display:none}
-.cleanup-result.success{background:#1a3a2a;color:#2ecc71;display:block}
-.cleanup-result.error{background:#3a1a1a;color:#e74c3c;display:block}
-.log-viewer{background:#0a1219;border:1px solid #2c3e50;border-radius:6px;padding:12px;max-height:300px;overflow-y:auto;font-family:'Consolas','Courier New',monospace;font-size:12px;line-height:1.6}
-.log-viewer .log-line{margin-bottom:2px;white-space:pre-wrap;word-break:break-all}
-.log-viewer .log-info{color:#74b9ff}
-.log-viewer .log-warn{color:#fdcb6e}
-.log-viewer .log-error{color:#e74c3c}
-.trend-chart{display:flex;align-items:flex-end;gap:8px;height:140px;padding:0 4px}
-.trend-bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:4px}
-.trend-bar .bar-val{background:linear-gradient(180deg,#0d7377,#1a3a4a);border-radius:3px 3px 0 0;width:100%;min-height:4px;position:relative;transition:height .3s}
-.trend-bar .bar-lbl{font-size:10px;color:#636e72;text-align:center;white-space:nowrap}
-.trend-bar .bar-cnt{font-size:11px;color:#b2bec3;font-weight:600}
-.footer{text-align:center;font-size:11px;color:#636e72;padding:20px}
-.refresh-info{font-size:11px;color:#636e72;margin-left:auto}
-.rate-limit-table td.blocked{color:#e74c3c;font-weight:600}
-.rate-limit-table td.active{color:#fdcb6e}
-.empty-state{text-align:center;padding:30px;color:#636e72;font-size:14px}
+.panel{background:var(--card);border-radius:16px;padding:20px;border:1px solid var(--border)}
+.panel h3{font-size:13px;font-weight:500;color:var(--text2);margin-bottom:16px}
+.progress{height:8px;background:var(--border);border-radius:8px;overflow:hidden;margin-bottom:12px}
+.progress .fill{height:100%;border-radius:8px;transition:width .8s cubic-bezier(.4,0,.2,1)}
+.progress .fill.blue{background:linear-gradient(90deg,var(--blue),var(--accent))}
+.progress .fill.green{background:linear-gradient(90deg,#059669,var(--green))}
+.progress .fill.yellow{background:linear-gradient(90deg,#d97706,var(--yellow))}
+.progress .fill.red{background:linear-gradient(90deg,#dc2626,var(--red))}
+.progress-info{display:flex;justify-content:space-between;font-size:12px;color:var(--text3)}
+.progress-info .pct{font-weight:600;color:var(--text)}
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th{text-align:left;font-size:11px;font-weight:600;color:var(--text3);padding:10px 12px;border-bottom:1px solid var(--border);text-transform:uppercase;letter-spacing:.5px}
+td{font-size:13px;padding:10px 12px;border-bottom:1px solid rgba(31,41,55,.5);color:var(--text)}
+tr:hover td{background:rgba(99,102,241,.05)}
+.btn{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none;padding:10px 20px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:500;transition:all .2s;box-shadow:0 4px 12px rgba(99,102,241,.3)}
+.btn:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(99,102,241,.4)}
+.btn:active{transform:translateY(0)}
+.btn.danger{background:linear-gradient(135deg,#dc2626,#ef4444);box-shadow:0 4px 12px rgba(239,68,68,.3)}
+.btn.danger:hover{box-shadow:0 6px 20px rgba(239,68,68,.4)}
+.cleanup-form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.cleanup-form input{background:var(--border);border:1px solid transparent;color:var(--text);padding:10px 14px;border-radius:10px;font-size:13px;width:140px;transition:border-color .2s}
+.cleanup-form input:focus{outline:none;border-color:var(--accent)}
+.cleanup-result{margin-top:12px;font-size:13px;padding:12px 16px;border-radius:10px;display:none;border:1px solid}
+.cleanup-result.success{background:rgba(16,185,129,.1);color:var(--green);border-color:rgba(16,185,129,.2);display:block}
+.cleanup-result.error{background:rgba(239,68,68,.1);color:var(--red);border-color:rgba(239,68,68,.2);display:block}
+.log-viewer{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;max-height:320px;overflow-y:auto;font-family:'JetBrains Mono','Fira Code','Consolas',monospace;font-size:12px;line-height:1.8}
+.log-viewer::-webkit-scrollbar{width:6px}
+.log-viewer::-webkit-scrollbar-track{background:transparent}
+.log-viewer::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.trend-chart{display:flex;align-items:flex-end;gap:6px;height:140px;padding:0 4px}
+.trend-bar{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px}
+.trend-bar .bar-val{background:linear-gradient(180deg,var(--accent),rgba(99,102,241,.3));border-radius:4px 4px 0 0;width:100%;min-height:4px;transition:height .5s cubic-bezier(.4,0,.2,1)}
+.trend-bar:hover .bar-val{background:linear-gradient(180deg,var(--accent2),rgba(139,92,246,.4))}
+.trend-bar .bar-lbl{font-size:10px;color:var(--text3);white-space:nowrap}
+.trend-bar .bar-cnt{font-size:11px;color:var(--text2);font-weight:500}
+.footer{text-align:center;font-size:11px;color:var(--text3);padding:24px;border-top:1px solid var(--border)}
+.empty-state{text-align:center;padding:40px;color:var(--text3);font-size:13px}
+.rate-limit-table td.blocked{color:var(--red);font-weight:600}
+.rate-limit-table td.active{color:var(--yellow)}
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:500}
+.badge.green{background:rgba(16,185,129,.15);color:var(--green)}
+.badge.red{background:rgba(239,68,68,.15);color:var(--red)}
+.badge.yellow{background:rgba(245,158,11,.15);color:var(--yellow)}
 </style>
 </head>
 <body>
 <div class="header">
-<h1>TXT查重管理看板 <span id="version"></span></h1>
+<h1>TXT 查重管理看板 <span id="version"></span></h1>
 <div class="status">
 <span class="dot" id="status-dot"></span>
 <span class="uptime" id="uptime-display"></span>
@@ -1720,358 +1732,150 @@ body{font-family:'Microsoft YaHei','PingFang SC',sans-serif;background:#0f1923;c
 <div class="container">
 
 <div class="cards">
-<div class="card"><div class="label">哈希记录总数</div><div class="value" id="card-total">-</div><div class="sub">数据库主表</div></div>
-<div class="card"><div class="label">数据库大小</div><div class="value" id="card-dbsize">-</div><div class="sub">hash_index.db</div></div>
-<div class="card"><div class="label">WAL文件大小</div><div class="value" id="card-walsize">-</div><div class="sub">待写入日志</div></div>
-<div class="card"><div class="label">页面统计</div><div class="value" id="card-pages">-</div><div class="sub">使用/空闲页数</div></div>
-<div class="card"><div class="label">当前连接数</div><div class="value" id="card-conn">-</div><div class="sub">活跃客户端</div></div>
-<div class="card"><div class="label">已清理总量</div><div class="value" id="card-deleted">-</div><div class="sub">累计删除数据</div></div>
-<div class="card"><div class="label">机台数量</div><div class="value" id="card-machines">-</div><div class="sub">已注册机台</div></div>
-<div class="card"><div class="label">存储类型</div><div class="value" id="card-storage">-</div><div class="sub">SQLite/LMDB</div></div>
+<div class="card"><div class="icon">📦</div><div class="label">哈希记录</div><div class="value" id="card-total">-</div><div class="sub">数据库主表</div></div>
+<div class="card"><div class="icon">💽</div><div class="label">数据库大小</div><div class="value" id="card-dbsize">-</div><div class="sub">存储占用</div></div>
+<div class="card"><div class="icon">🔗</div><div class="label">当前连接</div><div class="value" id="card-conn">-</div><div class="sub">活跃客户端</div></div>
+<div class="card"><div class="icon">🏭</div><div class="label">机台数量</div><div class="value" id="card-machines">-</div><div class="sub">已注册机台</div></div>
 </div>
 
 <div class="section">
-<h2><span class="icon">💾</span>磁盘使用</h2>
+<h2>系统资源</h2>
 <div class="panels">
 <div class="panel">
 <h3>磁盘空间</h3>
-<div class="bar-container"><div class="bar blue" id="disk-bar" style="width:0%">0%</div></div>
-<div class="bar-info"><span id="disk-used-label">已用: -</span><span id="disk-total-label">总容量: -</span><span id="disk-free-label">剩余: -</span></div>
+<div class="progress"><div class="fill blue" id="disk-bar" style="width:0%"></div></div>
+<div class="progress-info"><span id="disk-used-label">已用: -</span><span class="pct" id="disk-pct">0%</span><span id="disk-free-label">剩余: -</span></div>
 </div>
 <div class="panel">
 <h3>系统内存</h3>
-<div class="bar-container"><div class="bar" id="mem-bar" style="width:0%">0%</div></div>
-<div class="bar-info"><span id="mem-proc-label">进程: -</span><span id="mem-sys-label">系统: -</span><span id="mem-avail-label">可用: -</span></div>
+<div class="progress"><div class="fill green" id="mem-bar" style="width:0%"></div></div>
+<div class="progress-info"><span id="mem-proc-label">进程: -</span><span class="pct" id="mem-pct">0%</span><span id="mem-avail-label">可用: -</span></div>
 </div>
 </div>
 </div>
 
 <div class="section">
-<h2><span class="icon">📊</span>数据趋势（每月）</h2>
+<h2>数据趋势</h2>
 <div class="panel">
-<div id="trend-empty" class="empty-state">暂无趋势数据，系统将在每月自动记录</div>
-<div id="trend-chart" style="display:none">
-<div class="trend-chart" id="trend-bars"></div>
-</div>
+<div id="trend-empty" class="empty-state">暂无趋势数据</div>
+<div id="trend-chart" style="display:none"><div class="trend-chart" id="trend-bars"></div></div>
 </div>
 </div>
 
 <div class="section">
-<h2><span class="icon">🧹</span>数据清理</h2>
+<h2>数据清理</h2>
 <div class="panel">
-<h3>手动清理最早数据</h3>
 <div class="cleanup-form">
 <input type="number" id="cleanup-count" value="100000" min="1000" step="10000" placeholder="清理数量">
 <button class="btn" onclick="doCleanup()">执行清理</button>
-<button class="btn danger" onclick="doCleanup(500000)" style="font-size:11px">快速清理50万</button>
+<button class="btn danger" onclick="doCleanup(500000)">快速清理50万</button>
 </div>
 <div class="cleanup-result" id="cleanup-result"></div>
 </div>
 </div>
 
 <div class="section">
-<h2><span class="icon">🏭</span>机台统计</h2>
+<h2>机台统计</h2>
 <div class="panel">
-<h3>各机台数据分布</h3>
 <div id="machine-empty" class="empty-state">暂无机台数据</div>
-<div id="machine-chart" style="display:none">
-<div class="trend-chart" id="machine-bars"></div>
+<div id="machine-chart" style="display:none"><div class="trend-chart" id="machine-bars"></div></div>
+<div class="table-wrap" id="machine-table" style="display:none">
+<table><thead><tr><th>机台标识</th><th>记录数</th><th>占比</th></tr></thead><tbody id="machine-tbody"></tbody></table>
 </div>
-<table class="table" id="machine-table" style="display:none">
-<thead><tr><th>机台标识</th><th>记录数</th><th>占比</th></tr></thead>
-<tbody id="machine-tbody"></tbody>
-</table>
 </div>
 </div>
 
 <div class="section">
-<h2><span class="icon">🚦</span>API频率限制</h2>
+<h2>频率限制</h2>
 <div class="panel">
-<div style="margin-bottom:10px;font-size:13px">
-<span id="rl-status"></span>
+<div style="margin-bottom:12px"><span id="rl-status"></span></div>
+<div id="rl-empty" class="empty-state" style="padding:16px">当前无被封禁IP</div>
+<div class="table-wrap" id="rl-table" style="display:none">
+<table class="rate-limit-table"><thead><tr><th>IP地址</th><th>状态</th><th>剩余封禁</th><th>请求数</th></tr></thead><tbody id="rl-tbody"></tbody></table>
 </div>
-<table class="table rate-limit-table" style="display:none" id="rl-table">
-<thead><tr><th>IP地址</th><th>状态</th><th>剩余封禁(秒)</th><th>当前窗口请求数</th></tr></thead>
-<tbody id="rl-tbody"></tbody>
-</table>
-<div id="rl-empty" class="empty-state">当前无被封禁IP，所有请求正常</div>
 </div>
 </div>
 
 <div class="section">
-<h2><span class="icon">📋</span>数据库详情</h2>
+<h2>数据库详情</h2>
 <div class="panel">
-<table class="table">
-<tbody id="db-detail"></tbody>
-</table>
+<div class="table-wrap"><table><tbody id="db-detail"></tbody></table></div>
 </div>
 </div>
 
 </div>
 
 <div class="footer">
-TXT查重工具 v<span id="footer-ver">-</span> | 看板自动刷新 | 构建于 <span id="footer-build">-</span>
+TXT查重工具 v<span id="footer-ver">-</span> · 自动刷新 · <span id="footer-build">-</span>
 </div>
 
 <script>
-var REFRESH = {{ refresh }};
-var CSRF_TOKEN = '{{ csrf_token }}';
-var lastUpdate = null;
-var updateTimer = null;
+var REFRESH={{ refresh }};var CSRF_TOKEN='{{ csrf_token }}';var lastUpdate=null;
+function formatNum(n){if(n===null||n===undefined||n==='-')return'-';if(typeof n==='string')return n;return n.toLocaleString('zh-CN')}
+function formatSize(mb){if(mb===null||mb===undefined||mb==='-')return'-';if(typeof mb==='string')return mb;if(mb>=1024)return(mb/1024).toFixed(1)+' GB';return mb.toFixed(1)+' MB'}
+function formatSeconds(s){if(s<60)return Math.floor(s)+'秒';if(s<3600)return Math.floor(s/60)+'分'+Math.floor(s%60)+'秒';var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),d=Math.floor(h/24);h=h%24;var t='';if(d>0)t+=d+'天';if(h>0)t+=h+'时';t+=m+'分';return t}
 
-function formatNum(n) {
-if (n === null || n === undefined || n === '-') return '-';
-if (typeof n === 'string') return n;
-return n.toLocaleString('zh-CN');
-}
+function updateDashboard(){
+fetch('/api/health/detailed').then(function(r){return r.json()}).then(function(d){
+document.getElementById('version').textContent='v'+(d.version||'-');
+document.getElementById('footer-ver').textContent=d.version||'-';
+document.getElementById('footer-build').textContent=d.build_time||'-';
+document.getElementById('status-dot').style.background=d.status==='running'?'var(--green)':'var(--red)';
+document.getElementById('uptime-display').textContent=formatSeconds(d.uptime_seconds||0);
+document.getElementById('card-conn').textContent=formatNum(d.active_connections);
+var db=d.db||{};
+document.getElementById('card-total').textContent=formatNum(db.total_records);
+document.getElementById('card-dbsize').textContent=formatSize(db.db_size_mb);
+var disk=d.disk||{};
+if(disk.total_gb){var p=disk.percent||0;document.getElementById('disk-bar').style.width=p+'%';document.getElementById('disk-bar').className='fill '+(p>90?'red':p>75?'yellow':'blue');document.getElementById('disk-pct').textContent=p.toFixed(1)+'%';document.getElementById('disk-used-label').textContent='已用: '+(disk.used_gb||0).toFixed(1)+' GB';document.getElementById('disk-free-label').textContent='剩余: '+(disk.free_gb||0).toFixed(1)+' GB'}
+var mem=d.memory||{};
+if(mem.process_mb){var mp=mem.system_percent||0;document.getElementById('mem-bar').style.width=mp+'%';document.getElementById('mem-bar').className='fill '+(mp>90?'red':mp>75?'yellow':'green');document.getElementById('mem-pct').textContent=mp.toFixed(1)+'%';document.getElementById('mem-proc-label').textContent='进程: '+mem.process_mb.toFixed(1)+' MB';document.getElementById('mem-avail-label').textContent='可用: '+(mem.system_available_gb||0).toFixed(1)+' GB'}
+var h='';[['存储类型',db.storage_type],['数据库大小',formatSize(db.db_size_mb)],['已清理',formatNum(db.deleted_count)],['页面数',formatNum(db.page_count)]].forEach(function(r){h+='<tr><td style="color:var(--text3);width:120px">'+r[0]+'</td><td>'+(r[1]||'-')+'</td></tr>'});
+document.getElementById('db-detail').innerHTML=h;
+lastUpdate=new Date();document.getElementById('refresh-info').textContent=lastUpdate.toLocaleTimeString('zh-CN');
+}).catch(function(e){console.error(e)});
 
-function formatSize(mb) {
-if (mb === null || mb === undefined || mb === '-') return '-';
-if (typeof mb === 'string') return mb;
-if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
-return mb.toFixed(1) + ' MB';
-}
-
-function formatSeconds(s) {
-if (s < 60) return Math.floor(s) + '秒';
-if (s < 3600) return Math.floor(s / 60) + '分' + Math.floor(s % 60) + '秒';
-var h = Math.floor(s / 3600);
-var m = Math.floor((s % 3600) / 60);
-var d = Math.floor(h / 24);
-h = h % 24;
-var t = '';
-if (d > 0) t += d + '天';
-if (h > 0) t += h + '时';
-t += m + '分';
-return t;
-}
-
-function updateDashboard() {
-fetch('/api/health/detailed')
-.then(function(r) { return r.json(); })
-.then(function(data) {
-document.getElementById('version').textContent = 'v' + (data.version || '-');
-document.getElementById('footer-ver').textContent = data.version || '-';
-document.getElementById('footer-build').textContent = data.build_time || '-';
-
-if (data.status === 'running') {
-document.getElementById('status-dot').style.background = '#2ecc71';
-} else {
-document.getElementById('status-dot').style.background = '#e74c3c';
-}
-
-document.getElementById('uptime-display').textContent = '运行: ' + formatSeconds(data.uptime_seconds || 0);
-
-document.getElementById('card-conn').textContent = formatNum(data.active_connections);
-
-var db = data.db || {};
-document.getElementById('card-total').textContent = formatNum(db.total_records);
-document.getElementById('card-dbsize').textContent = formatSize(db.db_size_mb);
-document.getElementById('card-walsize').textContent = formatSize(db.wal_size_mb);
-document.getElementById('card-deleted').textContent = formatNum(db.deleted_count);
-
-var pc = db.page_count || 0, fc = db.freelist_count || 0;
-document.getElementById('card-pages').textContent = formatNum(pc) + ' / ' + formatNum(fc);
-
-var walCls = document.querySelector('#card-walsize').closest('.card');
-if (db.wal_size_mb > 50) {
-walCls.classList.add('warn');
-} else {
-walCls.classList.remove('warn');
-}
-
-var disk = data.disk || {};
-if (disk.total_gb) {
-var dpct = disk.percent || 0;
-var dbar = document.getElementById('disk-bar');
-dbar.style.width = dpct + '%';
-dbar.textContent = dpct.toFixed(1) + '%';
-dbar.className = 'bar ' + (dpct > 90 ? 'red' : dpct > 75 ? 'yellow' : 'blue');
-document.getElementById('disk-used-label').textContent = '已用: ' + (disk.used_gb || 0).toFixed(1) + ' GB';
-document.getElementById('disk-total-label').textContent = '总容量: ' + (disk.total_gb || 0).toFixed(1) + ' GB';
-document.getElementById('disk-free-label').textContent = '剩余: ' + (disk.free_gb || 0).toFixed(1) + ' GB';
-}
-
-var mem = data.memory || {};
-if (mem.process_mb) {
-var mpct = mem.system_percent || 0;
-var mbar = document.getElementById('mem-bar');
-mbar.style.width = mpct + '%';
-mbar.textContent = mpct.toFixed(1) + '%';
-mbar.className = 'bar ' + (mpct > 90 ? 'red' : mpct > 75 ? 'yellow' : 'green');
-document.getElementById('mem-proc-label').textContent = '进程: ' + mem.process_mb.toFixed(1) + ' MB';
-document.getElementById('mem-sys-label').textContent = '系统: ' + mpct.toFixed(1) + '%';
-document.getElementById('mem-avail-label').textContent = '可用: ' + (mem.system_available_gb || 0).toFixed(1) + ' GB';
-}
-
-var detailHtml = '';
-var fields = [
-['存储类型', db.storage_type || '-'],
-['数据库路径', db.db_path || '.dedup_index/hash_index.db'],
-['数据库大小', formatSize(db.db_size_mb)],
-['WAL文件大小', formatSize(db.wal_size_mb)],
-['已清理总量', formatNum(db.deleted_count)],
-['页面数量', formatNum(db.page_count)],
-['页面大小', db.page_size ? formatSize(db.page_size / 1024) : '-'],
-['空闲页面', formatNum(db.freelist_count)]
-];
-for (var i = 0; i < fields.length; i++) {
-detailHtml += '<tr><td style="color:#7f8fa6;width:140px">' + fields[i][0] + '</td><td>' + fields[i][1] + '</td></tr>';
-}
-document.getElementById('db-detail').innerHTML = detailHtml;
-
-lastUpdate = new Date();
-document.getElementById('refresh-info').textContent = '更新: ' + lastUpdate.toLocaleTimeString('zh-CN');
-})
-.catch(function(e) {
-console.error('加载看板数据失败:', e);
+fetch('/api/trends').then(function(r){return r.json()}).then(function(d){
+var t=d.trends||[];if(!t.length){document.getElementById('trend-empty').style.display='block';document.getElementById('trend-chart').style.display='none';return}
+document.getElementById('trend-empty').style.display='none';document.getElementById('trend-chart').style.display='block';
+var mx=0;t.forEach(function(x){if(x.total_records>mx)mx=x.total_records});
+var h='';t.slice(-24).forEach(function(x){var bh=mx>0?Math.max(4,(x.total_records/mx)*120):4;h+='<div class="trend-bar"><div class="bar-cnt">'+formatNum(x.total_records)+'</div><div class="bar-val" style="height:'+bh+'px" title="'+x.date+'"></div><div class="bar-lbl">'+(x.date||'').substring(0,7)+'</div></div>'});
+document.getElementById('trend-bars').innerHTML=h;
 });
 
-fetch('/api/trends')
-.then(function(r) { return r.json(); })
-.then(function(data) {
-var trends = data.trends || [];
-if (trends.length === 0) {
-document.getElementById('trend-empty').style.display = 'block';
-document.getElementById('trend-chart').style.display = 'none';
-} else {
-document.getElementById('trend-empty').style.display = 'none';
-document.getElementById('trend-chart').style.display = 'block';
-var maxVal = 0;
-for (var i = 0; i < trends.length; i++) {
-if (trends[i].total_records > maxVal) maxVal = trends[i].total_records;
-}
-var html = '';
-for (var i = 0; i < Math.min(trends.length, 24); i++) {
-var t = trends[i];
-var h = maxVal > 0 ? Math.max(5, (t.total_records / maxVal) * 120) : 5;
-html += '<div class="trend-bar"><div class="bar-cnt">' + formatNum(t.total_records) + '</div>' +
-'<div class="bar-val" style="height:' + h + 'px" title="' + t.date + ': ' + formatNum(t.total_records) + '条, DB ' + formatSize(t.db_size_mb) + '"></div>' +
-'<div class="bar-lbl">' + (t.date || '').substring(0, 7) + '</div></div>';
-}
-document.getElementById('trend-bars').innerHTML = html;
-}
+fetch('/api/rate_limit/stats').then(function(r){return r.json()}).then(function(d){
+document.getElementById('rl-status').innerHTML=d.enabled?'<span class="badge green">已启用</span> '+d.max_per_minute+'次/分/IP':'<span class="badge red">已禁用</span>';
+var bl=d.blocked_ips||{},ac=d.active_ips||{},all={};for(var k in bl)all[k]={b:bl[k],a:ac[k]||0};for(var k in ac)if(!(k in all))all[k]={b:0,a:ac[k]};
+var ks=Object.keys(all);if(!ks.length){document.getElementById('rl-table').style.display='none';document.getElementById('rl-empty').style.display='block';return}
+document.getElementById('rl-table').style.display='';document.getElementById('rl-empty').style.display='none';
+var h='';ks.forEach(function(k){var v=all[k];h+='<tr><td>'+k+'</td><td>'+(v.b>0?'<span class="badge red">封禁</span>':'<span class="badge green">活跃</span>')+'</td><td>'+(v.b>0?v.b.toFixed(0)+'s':'-')+'</td><td>'+v.a+'</td></tr>'});
+document.getElementById('rl-tbody').innerHTML=h;
 });
 
-fetch('/api/rate_limit/stats')
-.then(function(r) { return r.json(); })
-.then(function(data) {
-var statusEl = document.getElementById('rl-status');
-if (data.enabled) {
-statusEl.innerHTML = '状态: <span style="color:#2ecc71">已启用</span> | ' +
-'限制: <span style="color:#fdcb6e">' + data.max_per_minute + '次/分钟/IP</span>';
-} else {
-statusEl.innerHTML = '状态: <span style="color:#e74c3c">已禁用</span>';
-}
-
-var blocked = data.blocked_ips || {};
-var active = data.active_ips || {};
-var allIps = {};
-for (var ip in blocked) allIps[ip] = {blocked: blocked[ip], active: active[ip] || 0};
-for (var ip in active) { if (!(ip in allIps)) allIps[ip] = {blocked: 0, active: active[ip]}; }
-
-var ipKeys = Object.keys(allIps);
-if (ipKeys.length === 0) {
-document.getElementById('rl-table').style.display = 'none';
-document.getElementById('rl-empty').style.display = 'block';
-} else {
-document.getElementById('rl-table').style.display = '';
-document.getElementById('rl-empty').style.display = 'none';
-var tbody = '';
-for (var i = 0; i < ipKeys.length; i++) {
-var ip = ipKeys[i];
-var info = allIps[ip];
-var cls = info.blocked > 0 ? 'blocked' : 'active';
-var status = info.blocked > 0 ? '🔒 封禁中' : '⚠️ 活跃';
-var remain = info.blocked > 0 ? info.blocked.toFixed(0) + 's' : '-';
-tbody += '<tr><td>' + ip + '</td><td class="' + cls + '">' + status + '</td><td>' + remain + '</td><td>' + info.active + '</td></tr>';
-}
-document.getElementById('rl-tbody').innerHTML = tbody;
-}
-});
-
-fetch('/api/machine_stats')
-.then(function(r) { return r.json(); })
-.then(function(data) {
-var machineData = data.data || {};
-var counts = machineData.machine_counts || {};
-var total = machineData.total_records || 0;
-var machineCount = machineData.machine_count || 0;
-
-document.getElementById('card-machines').textContent = formatNum(machineCount);
-
-var machineKeys = Object.keys(counts);
-if (machineKeys.length === 0) {
-    document.getElementById('machine-empty').style.display = 'block';
-    document.getElementById('machine-chart').style.display = 'none';
-    document.getElementById('machine-table').style.display = 'none';
-} else {
-    document.getElementById('machine-empty').style.display = 'none';
-    document.getElementById('machine-chart').style.display = 'block';
-    document.getElementById('machine-table').style.display = '';
-    
-    var maxVal = 0;
-    for (var i = 0; i < machineKeys.length; i++) {
-        if (counts[machineKeys[i]] > maxVal) maxVal = counts[machineKeys[i]];
-    }
-    
-    var chartHtml = '';
-    for (var i = 0; i < machineKeys.length; i++) {
-        var mid = machineKeys[i];
-        var cnt = counts[mid];
-        var h = maxVal > 0 ? Math.max(5, (cnt / maxVal) * 120) : 5;
-        chartHtml += '<div class="trend-bar"><div class="bar-cnt">' + formatNum(cnt) + '</div>' +
-        '<div class="bar-val" style="height:' + h + 'px" title="' + mid + ': ' + formatNum(cnt) + '条"></div>' +
-        '<div class="bar-lbl">' + mid + '</div></div>';
-    }
-    document.getElementById('machine-bars').innerHTML = chartHtml;
-    
-    var tableHtml = '';
-    for (var i = 0; i < machineKeys.length; i++) {
-        var mid = machineKeys[i];
-        var cnt = counts[mid];
-        var pct = total > 0 ? (cnt / total * 100).toFixed(1) : '0';
-        tableHtml += '<tr><td>' + mid + '</td><td>' + formatNum(cnt) + '</td><td>' + pct + '%</td></tr>';
-    }
-    document.getElementById('machine-tbody').innerHTML = tableHtml;
-}
+fetch('/api/machine_stats').then(function(r){return r.json()}).then(function(d){
+var m=d.data||{},c=m.machine_counts||{},t=m.total_records||0,mc=m.machine_count||0;
+document.getElementById('card-machines').textContent=formatNum(mc);
+var ks=Object.keys(c);if(!ks.length){document.getElementById('machine-empty').style.display='block';document.getElementById('machine-chart').style.display='none';document.getElementById('machine-table').style.display='none';return}
+document.getElementById('machine-empty').style.display='none';document.getElementById('machine-chart').style.display='block';document.getElementById('machine-table').style.display='';
+var mx=0;ks.forEach(function(k){if(c[k]>mx)mx=c[k]});
+var ch='';ks.forEach(function(k){var bh=mx>0?Math.max(4,(c[k]/mx)*120):4;ch+='<div class="trend-bar"><div class="bar-cnt">'+formatNum(c[k])+'</div><div class="bar-val" style="height:'+bh+'px"></div><div class="bar-lbl">'+k+'</div></div>'});
+document.getElementById('machine-bars').innerHTML=ch;
+var th='';ks.forEach(function(k){var p=t>0?(c[k]/t*100).toFixed(1):'0';th+='<tr><td>'+k+'</td><td>'+formatNum(c[k])+'</td><td>'+p+'%</td></tr>'});
+document.getElementById('machine-tbody').innerHTML=th;
 });
 }
 
-function doCleanup(count) {
-if (!count) count = parseInt(document.getElementById('cleanup-count').value) || 100000;
-var resultEl = document.getElementById('cleanup-result');
-resultEl.className = 'cleanup-result';
-resultEl.style.display = 'block';
-resultEl.textContent = '正在清理 ' + formatNum(count) + ' 条最早数据...';
-resultEl.className = 'cleanup-result';
-resultEl.style.color = '#fdcb6e';
-resultEl.style.background = '#2c3e20';
-
-fetch('/api/cleanup', {
-method: 'POST',
-headers: {'Content-Type': 'application/json'},
-body: JSON.stringify({count: count, csrf_token: CSRF_TOKEN})
-})
-.then(function(r) { return r.json(); })
-.then(function(data) {
-if (data.success) {
-resultEl.className = 'cleanup-result success';
-resultEl.textContent = '✓ 清理完成！已删除 ' + formatNum(data.deleted) + ' 条数据 | 淘汰队列剩余: ' + formatNum(data.eviction_queue_remaining) + ' 条';
-} else {
-resultEl.className = 'cleanup-result error';
-resultEl.textContent = '✗ 清理失败: ' + (data.error || '未知错误');
-}
-setTimeout(function() { updateDashboard(); }, 500);
-})
-.catch(function(e) {
-resultEl.className = 'cleanup-result error';
-resultEl.textContent = '✗ 请求失败: ' + e.message;
-});
+function doCleanup(c){
+if(!c)c=parseInt(document.getElementById('cleanup-count').value)||100000;
+var el=document.getElementById('cleanup-result');el.style.display='block';el.className='cleanup-result';el.style.color='var(--yellow)';el.style.background='rgba(245,158,11,.1)';el.style.borderColor='rgba(245,158,11,.2)';el.textContent='正在清理 '+formatNum(c)+' 条数据...';
+fetch('/api/cleanup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({count:c,csrf_token:CSRF_TOKEN})}).then(function(r){return r.json()}).then(function(d){
+if(d.success){el.className='cleanup-result success';el.textContent='已删除 '+formatNum(d.deleted)+' 条数据'}
+else{el.className='cleanup-result error';el.textContent='失败: '+(d.error||'未知错误')}
+setTimeout(updateDashboard,500);
+}).catch(function(e){el.className='cleanup-result error';el.textContent='请求失败: '+e.message});
 }
 
-updateDashboard();
-updateTimer = setInterval(updateDashboard, REFRESH);
+updateDashboard();setInterval(updateDashboard,REFRESH);
 </script>
 </body>
 </html>"""
