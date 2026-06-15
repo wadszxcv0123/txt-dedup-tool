@@ -70,15 +70,24 @@ class ShardedLMDB:
         def _open_shard(i):
             shard_dir = os.path.join(base_dir, f"shard_{i}")
             os.makedirs(shard_dir, exist_ok=True)
+
+            # 检查磁盘可用空间，避免预分配超出磁盘
+            import shutil
+            total, used, free = shutil.disk_usage(shard_dir)
+            free_gb = free / (1024**3)
+            effective_map_size = min(self.map_size, int(free_gb * 0.8 * 1024**3))
+            if effective_map_size < self.map_size:
+                effective_map_size = max(256 * 1024 * 1024, effective_map_size)
+
             env = lmdb.open(
                 shard_dir,
-                map_size=self.map_size,
+                map_size=effective_map_size,
                 max_readers=1024,
                 max_dbs=2,
                 lock=True,
                 writemap=True,
-                sync=False,
-                metasync=False,
+                sync=True,
+                metasync=True,
                 readahead=True,
             )
             hashes_db = env.open_db(b"hashes")
