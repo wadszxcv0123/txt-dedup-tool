@@ -71,17 +71,10 @@ class ShardedLMDB:
             shard_dir = os.path.join(base_dir, f"shard_{i}")
             os.makedirs(shard_dir, exist_ok=True)
 
-            import shutil
-            total, used, free = shutil.disk_usage(shard_dir)
-            free_gb = free / (1024**3)
-            effective_map_size = min(self.map_size, int(free_gb * 0.8 * 1024**3))
-            if effective_map_size < self.map_size:
-                effective_map_size = max(256 * 1024 * 1024, effective_map_size)
-
             env = lmdb.open(
                 shard_dir,
-                map_size=effective_map_size,
-                max_readers=1024,
+                map_size=self.map_size,
+                max_readers=256,
                 max_dbs=2,
                 lock=True,
                 writemap=True,
