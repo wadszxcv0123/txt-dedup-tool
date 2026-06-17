@@ -548,6 +548,20 @@ class HashIndex:
             except Exception:
                 pass
 
+    def release_memory(self):
+        """内存超阈值时强制刷盘并释放OS缓存页"""
+        if self.use_lmdb:
+            try:
+                self.lmdb_backend.release_memory()
+            except Exception:
+                pass
+        elif self.use_db:
+            try:
+                self._db.commit()
+                self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                pass
+
     def wal_checkpoint(self):
         if self.use_db:
             try:
@@ -1138,6 +1152,9 @@ def dedup_file():
                 duplicate_hash_samples.append(h)
                 if len(duplicate_hash_samples) >= 200:
                     break
+        
+        # 大文件处理后主动释放临时对象，避免内存持续累积
+        del lines, hashes, valid_indices, results
         
         return jsonify({
             'success': True,
@@ -2328,6 +2345,9 @@ def main(config_file_override=None):
         
         health_monitor.set_cleanup_callback(
             lambda count, idx=hash_index, log=logger: idx.cleanup_oldest(count, log)
+        )
+        health_monitor.set_memory_release_callback(
+            lambda idx=hash_index: idx.release_memory()
         )
         health_monitor.start()
         logger.info("[健康监控] 已集成到服务端")

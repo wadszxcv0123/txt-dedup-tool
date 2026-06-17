@@ -295,6 +295,27 @@ class ShardedLMDB:
                 pass
         return True
 
+    def release_memory(self):
+        """强制刷盘并释放OS缓存的内存页，降低RSS"""
+        import gc
+        gc.collect()
+        for env, _, _ in self.shards:
+            try:
+                env.sync(force=True)
+            except Exception:
+                pass
+        # Windows: 调用 EmptyWorkingSet 释放进程工作集
+        try:
+            import ctypes
+            from ctypes import wintypes
+            kernel32 = ctypes.windll.kernel32
+            psapi = ctypes.windll.psapi
+            handle = kernel32.GetCurrentProcess()
+            # 0xFFFFFFFF = 全部线程, -1 = 最小工作集
+            psapi.SetProcessWorkingSetSize(handle, -1, -1)
+        except Exception:
+            pass
+
     def close(self):
         for env, _, _ in self.shards:
             try:
@@ -340,7 +361,7 @@ class ShardedLMDB:
         return sources
 
     def get_machine_stats(self) -> Dict[str, int]:
-        """统计各个机台的记录数（并行遍历所有分片）"""
+        """统计各个机台的记录数（并行遍历所有分片，逐条释放避免内存峰值）"""
         machine_counts: Dict[str, int] = {}
 
         def _count_shard(env, hashes_db):
@@ -349,14 +370,19 @@ class ShardedLMDB:
                 cursor = txn.cursor(db=hashes_db)
                 for key, value in cursor:
                     try:
-                        meta = json.loads(value.decode('utf-8'))
-                        machine_id = meta.get('machine_id', '未知机台')
+                        meta_str = value.decode('utf-8')
+                        idx = meta_str.find('"machine_id"')
+                        if idx >= 0:
+                            start = meta_str.index(':', idx) + 1
+                            end = meta_str.index(',', start) if ',' in meta_str[start:] else meta_str.index('}', start)
+                            machine_id = meta_str[start:end].strip().strip('"').strip("'") or '未知机台'
+                        else:
+                            machine_id = '未知机台'
                         local[machine_id] = local.get(machine_id, 0) + 1
                     except Exception:
-                        pass
+                        local['未知机台'] = local.get('未知机台', 0) + 1
             return local
 
-        # 复用持久化线程池，避免每次调用创建/销毁线程
         workers = min(self.shard_count, os.cpu_count() or 4)
         if workers <= 1:
             for env, hashes_db, _ in self.shards:

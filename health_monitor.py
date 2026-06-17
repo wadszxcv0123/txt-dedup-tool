@@ -4,6 +4,7 @@
 import os
 import sys
 import time
+import json
 import threading
 import sqlite3
 import shutil
@@ -73,7 +74,10 @@ class HealthMonitor:
         
         self.process = psutil.Process()
         self.cleanup_callback = None
+        self.memory_release_callback = None
         self.db_path = None
+        self._alert_state_file = os.path.join(self.index_dir, '.alert_state.json')
+        self._load_alert_state()
         
         if self.logger:
             self.logger.info(f"[健康监控] 初始化完成")
@@ -88,8 +92,37 @@ class HealthMonitor:
     def set_cleanup_callback(self, callback):
         self.cleanup_callback = callback
     
+    def set_memory_release_callback(self, callback):
+        self.memory_release_callback = callback
+    
     def set_db_path(self, db_path: str):
         self.db_path = db_path
+    
+    def _load_alert_state(self):
+        try:
+            if os.path.exists(self._alert_state_file):
+                with open(self._alert_state_file, 'r') as f:
+                    state = json.load(f)
+                self.last_memory_alert_time = state.get('last_memory_alert_time', 0)
+                self.last_disk_alert_time = state.get('last_disk_alert_time', 0)
+                self.last_connection_alert_time = state.get('last_connection_alert_time', 0)
+                self.last_cleanup_time = state.get('last_cleanup_time', 0)
+        except Exception:
+            pass
+    
+    def _save_alert_state(self):
+        try:
+            state = {
+                'last_memory_alert_time': self.last_memory_alert_time,
+                'last_disk_alert_time': self.last_disk_alert_time,
+                'last_connection_alert_time': self.last_connection_alert_time,
+                'last_cleanup_time': self.last_cleanup_time
+            }
+            os.makedirs(os.path.dirname(self._alert_state_file), exist_ok=True)
+            with open(self._alert_state_file, 'w') as f:
+                json.dump(state, f)
+        except Exception:
+            pass
     
     def start(self):
         if not self._psutil_available:
@@ -138,7 +171,7 @@ class HealthMonitor:
     def _passive_checkpoint(self):
         """后台被动合并WAL文件，减少HDD业务高峰期的I/O压力"""
         try:
-            if not os.path.exists(self.db_path):
+            if not self.db_path or not os.path.exists(self.db_path):
                 return
             wal_path = self.db_path + '-wal'
             if not os.path.exists(wal_path):
@@ -158,6 +191,7 @@ class HealthMonitor:
     
     def _check_memory(self):
         try:
+            import gc
             mem_info = self.process.memory_info()
             mem_mb = mem_info.rss / (1024 * 1024)
             
@@ -166,9 +200,24 @@ class HealthMonitor:
             
             now = time.time()
             
+            # 内存超60%时主动GC，减少Python对象残留
+            if system_used_percent > 60:
+                gc.collect()
+            
+            # 内存超标时强制刷盘+释放OS缓存页，将数据转存到磁盘
+            if mem_mb >= self.memory_warning_mb and self.memory_release_callback:
+                try:
+                    self.memory_release_callback()
+                    if self.logger:
+                        new_mem = self.process.memory_info().rss / (1024 * 1024)
+                        self.logger.info(f"[内存释放] 已触发刷盘+释放工作集 | {mem_mb:.0f}MB → {new_mem:.0f}MB")
+                except Exception:
+                    pass
+            
             if mem_mb >= self.memory_critical_mb:
                 if now - self.last_memory_alert_time >= self.alert_cooldown:
                     self.last_memory_alert_time = now
+                    self._save_alert_state()
                     msg = f"服务端内存使用严重超标!\n\n进程内存: {mem_mb:.1f} MB\n系统内存: {system_used_percent:.1f}%\n\n请立即检查服务端运行状态!"
                     if self.logger:
                         self.logger.error(f"[告警] 内存使用严重超标: {mem_mb:.1f} MB (阈值: {self.memory_critical_mb} MB)")
@@ -177,6 +226,7 @@ class HealthMonitor:
             elif mem_mb >= self.memory_warning_mb:
                 if now - self.last_memory_alert_time >= self.alert_cooldown:
                     self.last_memory_alert_time = now
+                    self._save_alert_state()
                     msg = f"服务端内存使用超标\n\n进程内存: {mem_mb:.1f} MB\n系统内存: {system_used_percent:.1f}%\n\n建议关注服务端运行状态。"
                     if self.logger:
                         self.logger.warning(f"[告警] 内存使用超标: {mem_mb:.1f} MB (阈值: {self.memory_warning_mb} MB)")
@@ -204,6 +254,7 @@ class HealthMonitor:
             if free_gb <= self.disk_critical_gb:
                 if now - self.last_disk_alert_time >= self.alert_cooldown:
                     self.last_disk_alert_time = now
+                    self._save_alert_state()
                     msg = f"服务端磁盘空间严重不足!\n\n剩余空间: {free_gb:.1f} GB\n总容量: {total_gb:.1f} GB\n使用率: {used_percent:.1f}%\n\n请立即清理磁盘空间!"
                     if self.logger:
                         self.logger.error(f"[告警] 磁盘空间严重不足: {free_gb:.1f} GB (阈值: {self.disk_critical_gb} GB)")
@@ -212,6 +263,7 @@ class HealthMonitor:
             elif free_gb <= self.disk_warning_gb:
                 if now - self.last_disk_alert_time >= self.alert_cooldown:
                     self.last_disk_alert_time = now
+                    self._save_alert_state()
                     msg = f"服务端磁盘空间不足\n\n剩余空间: {free_gb:.1f} GB\n总容量: {total_gb:.1f} GB\n使用率: {used_percent:.1f}%\n\n建议关注磁盘使用情况。"
                     if self.logger:
                         self.logger.warning(f"[告警] 磁盘空间不足: {free_gb:.1f} GB (阈值: {self.disk_warning_gb} GB)")
@@ -248,6 +300,7 @@ class HealthMonitor:
             if free_gb <= self.disk_critical_gb:
                 if now - self.last_disk_alert_time >= self.alert_cooldown:
                     self.last_disk_alert_time = now
+                    self._save_alert_state()
                     msg = f"服务端磁盘空间严重不足!\n\n剩余空间: {free_gb:.1f} GB\n总容量: {total_gb:.1f} GB\n使用率: {used_percent:.1f}%\n\n请立即清理磁盘空间!"
                     if self.logger:
                         self.logger.error(f"[告警] 磁盘空间严重不足: {free_gb:.1f} GB (阈值: {self.disk_critical_gb} GB)")
@@ -256,6 +309,7 @@ class HealthMonitor:
             elif free_gb <= self.disk_warning_gb:
                 if now - self.last_disk_alert_time >= self.alert_cooldown:
                     self.last_disk_alert_time = now
+                    self._save_alert_state()
                     msg = f"服务端磁盘空间不足\n\n剩余空间: {free_gb:.1f} GB\n总容量: {total_gb:.1f} GB\n使用率: {used_percent:.1f}%\n\n建议关注磁盘使用情况。"
                     if self.logger:
                         self.logger.warning(f"[告警] 磁盘空间不足: {free_gb:.1f} GB (阈值: {self.disk_warning_gb} GB)")
@@ -285,6 +339,7 @@ class HealthMonitor:
             return
         
         self.last_cleanup_time = now
+        self._save_alert_state()
         self._trigger_cleanup(used_gb, total_gb, free_gb, used_percent)
     
     def _check_connections(self):
@@ -296,6 +351,7 @@ class HealthMonitor:
             if count >= self.connection_critical:
                 if now - self.last_connection_alert_time >= self.alert_cooldown:
                     self.last_connection_alert_time = now
+                    self._save_alert_state()
                     msg = f"服务端连接数严重超标!\n\n当前连接数: {count}\n阈值: {self.connection_critical}\n\n请检查是否有异常客户端连接!"
                     if self.logger:
                         self.logger.error(f"[告警] 连接数严重超标: {count} (阈值: {self.connection_critical})")
@@ -304,6 +360,7 @@ class HealthMonitor:
             elif count >= self.connection_warning:
                 if now - self.last_connection_alert_time >= self.alert_cooldown:
                     self.last_connection_alert_time = now
+                    self._save_alert_state()
                     msg = f"服务端连接数较高\n\n当前连接数: {count}\n阈值: {self.connection_warning}\n\n建议关注连接状态。"
                     if self.logger:
                         self.logger.warning(f"[告警] 连接数较高: {count} (阈值: {self.connection_warning})")
