@@ -353,35 +353,20 @@ class RemoteHashIndex:
                 self._logger.warning(f"[通知] 发送连接失败邮件失败: {str(notify_e)}")
 
     def check_and_add_batch(self, hash_vals: List[str], filename: str = "", file_path: str = "") -> List[bool]:
-        pre_check = self.check_only_batch(hash_vals, filename)
-        already_existing = set()
-        for i, is_dup in enumerate(pre_check):
-            if is_dup:
-                already_existing.add(hash_vals[i])
-
         results = []
         from datetime import datetime
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         for i in range(0, len(hash_vals), self._batch_size):
             batch = hash_vals[i:i+self._batch_size]
-            new_batch = [h for h in batch if h not in already_existing]
-            if new_batch:
-                result = self._make_request(
-                    'api/check',
-                    method='POST',
-                    data={'hashes': new_batch, 'check_only': False, 'filename': filename, 'file_path': file_path, 'machine_id': self._machine_id, 'timestamp': timestamp}
-                )
-                if result and result.get('success'):
-                    new_results = iter(result.get('results', []))
-                else:
-                    raise ConnectionError(f"服务端无响应，网络超时或连接断开，请检查网络后重试 (batch {i//self._batch_size+1})")
+            result = self._make_request(
+                'api/check',
+                method='POST',
+                data={'hashes': batch, 'check_only': False, 'filename': filename, 'file_path': file_path, 'machine_id': self._machine_id, 'timestamp': timestamp}
+            )
+            if result and result.get('success'):
+                results.extend(result.get('results', []))
             else:
-                new_results = iter([])
-            for h in batch:
-                if h in already_existing:
-                    results.append(True)
-                else:
-                    results.append(next(new_results))
+                raise ConnectionError(f"服务端无响应，网络超时或连接断开，请检查网络后重试 (batch {i//self._batch_size+1})")
         return results
 
     def check_only_batch(self, hash_vals: List[str], filename: str = "") -> List[bool]:
