@@ -366,8 +366,7 @@ class RemoteHashIndex:
             if result and result.get('success'):
                 results.extend(result.get('results', []))
             else:
-                # 服务端失败时保守计为重复，避免漏报导致脏数据入库
-                results.extend([True] * len(batch))
+                raise ConnectionError(f"服务端无响应，网络超时或连接断开，请检查网络后重试 (batch {i//self._batch_size+1})")
         return results
 
     def check_only_batch(self, hash_vals: List[str], filename: str = "") -> List[bool]:
@@ -382,8 +381,7 @@ class RemoteHashIndex:
             if result and result.get('success'):
                 results.extend(result.get('results', []))
             else:
-                # 服务端失败时保守计为重复，避免漏报
-                results.extend([True] * len(batch))
+                raise ConnectionError(f"服务端无响应，网络超时或连接断开，请检查网络后重试 (batch {i//self._batch_size+1})")
         return results
 
     def get_stats(self):
@@ -919,8 +917,7 @@ class RemoteTXTDeduplicator:
                     self.logger.debug(f"[块处理] 块 {chunks_processed + 1} | 行数:{chunk_lines} | 唯一:{uniq_count} | 重复:{dup_count} | 耗时:{chunk_duration:.0f}ms")
                 else:
                     self.logger.error(f"[块处理] 块 {chunks_processed + 1} 服务端返回失败")
-                    # 请求失败时保守计为全部重复，避免漏报
-                    duplicate_lines += chunk_lines
+                    raise ConnectionError(f"服务端无响应，块 {chunks_processed + 1} 失败，请检查网络后重试")
 
                 chunks_processed += 1
                 progress_bar.update(chunks_processed, line_count=chunk_lines)
