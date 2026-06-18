@@ -930,7 +930,11 @@ def check_hash():
             logger.warning(f"[参数错误] hashes必须是列表 | IP: {request.client_ip}")
             return jsonify({'error': 'hashes必须是列表'}), 400
         
+        original_count = len(hashes)
         hashes = [h for h in hashes if isinstance(h, str) and h.strip()]
+        filtered_count = original_count - len(hashes)
+        if filtered_count > 0:
+            logger.warning(f"[参数过滤] 过滤掉 {filtered_count} 个无效哈希值 | IP: {request.client_ip}")
         if not hashes:
             return jsonify({'error': '哈希值列表为空'}), 400
         
